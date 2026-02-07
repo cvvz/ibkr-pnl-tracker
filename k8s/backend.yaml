@@ -47,7 +47,7 @@ spec:
       containers:
         - name: backend
           image: cvvz/ibkr-backend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:
