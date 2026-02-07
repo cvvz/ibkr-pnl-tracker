@@ -28,7 +28,7 @@ spec:
       containers:
         - name: ib-gateway
           image: cvvz/ib-gateway:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 7496
               name: ib-api
