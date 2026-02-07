@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ class IBKRSyncManager:
         return self._status
 
     def _run(self) -> None:
+        asyncio.set_event_loop(asyncio.new_event_loop())
         self._status = SyncStatus(running=True, started_at=_utc_now())
         backoff = max(1, self.settings.ib_reconnect_min_delay)
 

@@ -64,7 +64,8 @@ spec:
             - name: IBKR_GATEWAY_NAMESPACE
               value: ibkr
             - name: IBKR_GATEWAY_VNC_URL
-              value: http://20.12.116.41:6080
+              value: http://20.12.116.41:6080/vnc.html?autoconnect=1&path=websockify
+
 ---
 apiVersion: v1
 kind: Service
