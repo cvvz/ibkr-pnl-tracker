@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ibkr-frontend
+  namespace: ibkr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ibkr-frontend
+  template:
+    metadata:
+      labels:
+        app: ibkr-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: cvvz/ibkr-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80

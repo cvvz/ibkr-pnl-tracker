@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ib-gateway-novnc
+  namespace: ibkr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ib-gateway-novnc
+  template:
+    metadata:
+      labels:
+        app: ib-gateway-novnc
+    spec:
+      containers:
+        - name: novnc
+          image: theasp/novnc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6080
+              name: http
+          env:
+            - name: VNC_SERVER
+              value: ib-gateway
+            - name: VNC_PORT
+              value: "5900"

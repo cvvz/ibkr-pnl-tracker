@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ibkr-backend
+  namespace: ibkr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ibkr-backend
+  template:
+    metadata:
+      labels:
+        app: ibkr-backend
+    spec:
+      serviceAccountName: backend-sa
+      containers:
+        - name: backend
+          image: cvvz/ibkr-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: IBKR_HOST
+              value: ib-gateway
+            - name: IBKR_PORT
+              value: "7496"
+            - name: IBKR_AUTO_SYNC
+              value: "true"
+            - name: IBKR_GATEWAY_RESTART_ENABLED
+              value: "true"
+            - name: IBKR_GATEWAY_DEPLOYMENT
+              value: ib-gateway
+            - name: IBKR_GATEWAY_NAMESPACE
+              value: ibkr
+            - name: IBKR_GATEWAY_VNC_URL
+              value: http://<EXTERNAL_VNC_IP>:5900
