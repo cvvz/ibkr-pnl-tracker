@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ib-gateway-data
+  namespace: ibkr
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,3 +44,58 @@ spec:
         - name: ib-data
           persistentVolumeClaim:
             claimName: ib-gateway-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ib-gateway
+  namespace: ibkr
+spec:
+  selector:
+    app: ib-gateway
+  ports:
+    - name: ib-api
+      port: 7496
+      targetPort: 7496
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ib-gateway-novnc
+  namespace: ibkr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ib-gateway-novnc
+  template:
+    metadata:
+      labels:
+        app: ib-gateway-novnc
+    spec:
+      containers:
+        - name: novnc
+          image: theasp/novnc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6080
+              name: http
+          env:
+            - name: VNC_SERVER
+              value: ib-gateway
+            - name: VNC_PORT
+              value: "5900"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ib-gateway-novnc
+  namespace: ibkr
+spec:
+  type: LoadBalancer
+  selector:
+    app: ib-gateway-novnc
+  ports:
+    - name: http
+      port: 6080
+      targetPort: 6080

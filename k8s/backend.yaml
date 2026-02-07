@@ -1,3 +1,33 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+  namespace: ibkr
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-gateway-restart
+  namespace: ibkr
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-gateway-restart
+  namespace: ibkr
+subjects:
+  - kind: ServiceAccount
+    name: backend-sa
+    namespace: ibkr
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backend-gateway-restart
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,4 +64,18 @@ spec:
             - name: IBKR_GATEWAY_NAMESPACE
               value: ibkr
             - name: IBKR_GATEWAY_VNC_URL
-              value: http://<EXTERNAL_VNC_IP>:5900
+              value: http://<NOVNC_EXTERNAL_IP>:6080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ibkr-backend
+  namespace: ibkr
+spec:
+  type: LoadBalancer
+  selector:
+    app: ibkr-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
