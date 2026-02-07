@@ -54,7 +54,7 @@ spec:
             - name: IBKR_HOST
               value: ib-gateway
             - name: IBKR_PORT
-              value: "7496"
+              value: "4001"
             - name: IBKR_AUTO_SYNC
               value: "true"
             - name: IBKR_GATEWAY_RESTART_ENABLED

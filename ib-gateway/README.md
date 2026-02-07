@@ -16,17 +16,17 @@ https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/
 ## Run
 
 ```bash
-docker run --rm -p 7496:7496 -p 5900:5900 ib-gateway:local
+docker run --rm -p 4001:4001 -p 5900:5900 ib-gateway:local
 ```
 
 Optional VNC password:
 
 ```bash
-docker run --rm -e VNC_PASSWORD=yourpass -p 7496:7496 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run --rm -e VNC_PASSWORD=yourpass -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
 ```
 
 ## Notes
 - You must complete login + 2FA in the GUI.
-- Enable API access inside IB Gateway settings and confirm the API port (7496 for live).
+- Enable API access inside IB Gateway settings and confirm the API port (default 4001 for live).
 - This image does not include IBC (auto-login). It is meant for manual login via VNC/noVNC.
  - noVNC is exposed on port 6080 (`http://localhost:6080/vnc.html`).

@@ -44,6 +44,6 @@ RUN curl -fsSL "$IB_GATEWAY_URL" -o /tmp/ibgateway.sh \
 COPY start.sh /usr/local/bin/start-ibgateway.sh
 RUN chmod +x /usr/local/bin/start-ibgateway.sh
 
-EXPOSE 7496 5900 6080
+EXPOSE 4001 5900 6080
 
 CMD ["/usr/local/bin/start-ibgateway.sh"]
