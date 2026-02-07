@@ -64,7 +64,7 @@ spec:
             - name: IBKR_GATEWAY_NAMESPACE
               value: ibkr
             - name: IBKR_GATEWAY_VNC_URL
-              value: http://<NOVNC_EXTERNAL_IP>:6080
+              value: http://20.85.47.226:6080
 ---
 apiVersion: v1
 kind: Service
