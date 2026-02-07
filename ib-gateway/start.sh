@@ -2,6 +2,7 @@
 set -euo pipefail
 
 VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_PASSWORD="${VNC_PASSWORD:-}"
 
 mkdir -p /tmp/.X11-unix
@@ -23,6 +24,8 @@ if [ -n "$VNC_PASSWORD" ]; then
 else
   x11vnc -forever -shared -rfbport "$VNC_PORT" -nopw -display :0 &
 fi
+
+websockify --web /opt/novnc "$NOVNC_PORT" "localhost:$VNC_PORT" &
 
 if [ -f /opt/ibgateway/ibgatewaystart.sh ]; then
   exec /opt/ibgateway/ibgatewaystart.sh

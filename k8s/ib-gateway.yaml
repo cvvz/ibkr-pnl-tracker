@@ -34,9 +34,13 @@ spec:
               name: ib-api
             - containerPort: 5900
               name: vnc
+            - containerPort: 6080
+              name: novnc
           env:
             - name: VNC_PORT
               value: "5900"
+            - name: NOVNC_PORT
+              value: "6080"
           volumeMounts:
             - name: ib-data
               mountPath: /root/ibkr
@@ -58,34 +62,6 @@ spec:
       port: 7496
       targetPort: 7496
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ib-gateway-novnc
-  namespace: ibkr
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ib-gateway-novnc
-  template:
-    metadata:
-      labels:
-        app: ib-gateway-novnc
-    spec:
-      containers:
-        - name: novnc
-          image: theasp/novnc:latest
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 8080
-              name: http
-          env:
-            - name: VNC_SERVER
-              value: ib-gateway
-            - name: VNC_PORT
-              value: "5900"
----
 apiVersion: v1
 kind: Service
 metadata:
@@ -94,8 +70,8 @@ metadata:
 spec:
   type: LoadBalancer
   selector:
-    app: ib-gateway-novnc
+    app: ib-gateway
   ports:
     - name: http
       port: 6080
-      targetPort: 8080
+      targetPort: 6080
