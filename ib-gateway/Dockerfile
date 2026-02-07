@@ -1,6 +1,6 @@
 FROM ubuntu:22.04
 
-ARG IB_GATEWAY_URL="https://download2.interactivebrokers.com/installers/ibgateway/10.30.1o/ibgateway-10.30.1o-standalone-linux-x64.sh"
+ARG IB_GATEWAY_URL="https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:0 \

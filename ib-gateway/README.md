@@ -8,9 +8,9 @@ This image runs IB Gateway with a headless X server and VNC so you can log in fr
 docker build -t ib-gateway:local --build-arg IB_GATEWAY_URL=<IB_GATEWAY_INSTALLER_URL> .
 ```
 
-Example installer URL (update to the current version):
+Example installer URL:
 ```
-https://download2.interactivebrokers.com/installers/ibgateway/10.30.1o/ibgateway-10.30.1o-standalone-linux-x64.sh
+https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh
 ```
 
 ## Run
