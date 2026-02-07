@@ -13,6 +13,11 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4
 });
 
+const formatDate = (value) => {
+  if (!value) return "--";
+  return value.split("T")[0] ?? value;
+};
+
 function App() {
   const [summary, setSummary] = useState(null);
   const [positions, setPositions] = useState([]);
@@ -125,14 +130,6 @@ function App() {
     });
   }, [expanded, tradesByPosition]);
 
-  const startSync = async () => {
-    await fetch(`${API_BASE}/sync/start`, { method: "POST" });
-  };
-
-  const seedDemo = async () => {
-    await fetch(`${API_BASE}/sync/demo`, { method: "POST" });
-  };
-
   const restartGateway = async () => {
     await fetch(`${API_BASE}/gateway/restart`, { method: "POST" });
     if (ibStatus.vnc_url) {
@@ -197,8 +194,8 @@ function App() {
           {money.format(pos.total_pnl)}
         </span>
         <span className="time">
-          <div>Open: {pos.open_time ?? "--"}</div>
-          {isHistory && <div>Close: {pos.close_time ?? "--"}</div>}
+          <div>{formatDate(pos.open_time)}</div>
+          {isHistory && <div>Close: {formatDate(pos.close_time)}</div>}
         </span>
         <button className="toggle" onClick={() => toggleExpanded(pos.id)}>
           {expanded.has(pos.id) ? "Hide Trades" : "Show Trades"}
@@ -233,25 +230,19 @@ function App() {
           </button>
         </nav>
         <div className="side-actions">
-          <button className="btn primary" onClick={startSync}>
-            Start IB Sync
-          </button>
-          <button className="btn ghost" onClick={seedDemo}>
-            Seed Demo Data
-          </button>
-            <div className="status-group">
-              <span className={`status ${wsStatus}`}>WS {wsStatus}</span>
-              <span className={`status ${ibkrStatusClass}`}>
-                {ibStatus.connected ? "IB Connected" : "IB Disconnected"}
-              </span>
-              {!ibStatus.connected && ibStatus.vnc_url && (
-                <button className="btn tiny" onClick={restartGateway}>
-                  Re-auth (VNC)
-                </button>
-              )}
-              {ibStatus.error && (
-                <span className="status-note">{ibStatus.error}</span>
-              )}
+          <div className="status-group">
+            <span className={`status ${wsStatus}`}>WS {wsStatus}</span>
+            <span className={`status ${ibkrStatusClass}`}>
+              {ibStatus.connected ? "IB Connected" : "IB Disconnected"}
+            </span>
+            {!ibStatus.connected && ibStatus.vnc_url && (
+              <button className="btn tiny" onClick={restartGateway}>
+                Re-auth (VNC)
+              </button>
+            )}
+            {ibStatus.error && (
+              <span className="status-note">{ibStatus.error}</span>
+            )}
           </div>
         </div>
       </aside>
@@ -269,21 +260,71 @@ function App() {
             </p>
           </div>
           <div className="summary">
-            <div className="summary-card">
+            <div
+              className={`summary-card ${
+                summary
+                  ? summary.realized_pnl >= 0
+                    ? "summary-pos"
+                    : "summary-neg"
+                  : "summary-pos"
+              }`}
+            >
               <p>Realized</p>
-              <strong>
+              <strong
+                className={
+                  summary
+                    ? summary.realized_pnl >= 0
+                      ? "pos"
+                      : "neg"
+                    : ""
+                }
+              >
                 {summary ? money.format(summary.realized_pnl) : "--"}
               </strong>
             </div>
-            <div className="summary-card">
+            <div
+              className={`summary-card ${
+                summary
+                  ? summary.unrealized_pnl >= 0
+                    ? "summary-pos"
+                    : "summary-neg"
+                  : "summary-pos"
+              }`}
+            >
               <p>Unrealized</p>
-              <strong>
+              <strong
+                className={
+                  summary
+                    ? summary.unrealized_pnl >= 0
+                      ? "pos"
+                      : "neg"
+                    : ""
+                }
+              >
                 {summary ? money.format(summary.unrealized_pnl) : "--"}
               </strong>
             </div>
-            <div className="summary-card accent">
+            <div
+              className={`summary-card ${
+                summary
+                  ? summary.total_pnl >= 0
+                    ? "total-pos"
+                    : "total-neg"
+                  : "total-pos"
+              }`}
+            >
               <p>Total</p>
-              <strong>{summary ? money.format(summary.total_pnl) : "--"}</strong>
+              <strong
+                className={
+                  summary
+                    ? summary.total_pnl >= 0
+                      ? "pos"
+                      : "neg"
+                    : ""
+                }
+              >
+                {summary ? money.format(summary.total_pnl) : "--"}
+              </strong>
             </div>
           </div>
         </header>

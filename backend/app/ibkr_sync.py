@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from ib_insync import Forex, IB
+from ib_insync import Forex, IB, Position
 
 from .config import Settings
 from .db import get_connection, upsert_account
@@ -70,6 +70,7 @@ class IBKRSyncManager:
                     clientId=self.settings.ib_client_id,
                     readonly=self.settings.ib_readonly,
                 )
+                ib.reqMarketDataType(3)
                 self._status.connected = True
                 self._status.last_connected_at = _utc_now()
                 self._status.error = None
@@ -97,7 +98,17 @@ class IBKRSyncManager:
                         fill.execution.execId,
                     )
 
-                def on_position(account_code, contract, position, avg_cost):
+                def on_position(*args):
+                    if len(args) == 1 and isinstance(args[0], Position):
+                        pos = args[0]
+                        account_code = pos.account
+                        contract = pos.contract
+                        position = pos.position
+                        avg_cost = pos.avgCost
+                    elif len(args) >= 4:
+                        account_code, contract, position, avg_cost = args[:4]
+                    else:
+                        return
                     if account_code != account:
                         return
                     conn.execute(

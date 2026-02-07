@@ -78,7 +78,7 @@ def get_positions(conn: sqlite3.Connection, account_id: int, base_currency: str)
         (account_id,),
     ).fetchall()
 
-    return [_row_to_position(conn, row, base_currency, is_history=True) for row in rows]
+    return [_row_to_position(conn, row, base_currency, is_history=False) for row in rows]
 
 
 def get_history_positions(conn: sqlite3.Connection, account_id: int, base_currency: str) -> List[Dict]:
@@ -92,7 +92,7 @@ def get_history_positions(conn: sqlite3.Connection, account_id: int, base_curren
         (account_id,),
     ).fetchall()
 
-    return [_row_to_position(conn, row, base_currency) for row in rows]
+    return [_row_to_position(conn, row, base_currency, is_history=True) for row in rows]
 
 
 def get_account_summary(conn: sqlite3.Connection, account_id: int, base_currency: str) -> Dict:

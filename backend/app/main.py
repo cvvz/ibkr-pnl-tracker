@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
 from .db import get_connection, init_db, upsert_account
-from .ibkr_sync import IBKRSyncManager, seed_demo_data
+from .ibkr_sync import IBKRSyncManager
 from .k8s import restart_deployment
 from .pnl import get_account_summary, get_history_positions, get_positions
 
@@ -29,18 +29,52 @@ def _utc_now() -> str:
     return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
 
 
-def _get_default_account(conn: sqlite3.Connection) -> Dict[str, Any]:
+def _get_default_account(conn: sqlite3.Connection) -> Dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT a.id, a.ibkr_account, a.base_currency
+        FROM accounts a
+        WHERE a.id IN (SELECT account_id FROM positions)
+        LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return {"id": int(row["id"]), "account": row["ibkr_account"], "base_currency": row["base_currency"]}
+
+    row = conn.execute(
+        """
+        SELECT a.id, a.ibkr_account, a.base_currency
+        FROM accounts a
+        WHERE a.id IN (SELECT account_id FROM positions_history)
+        LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return {"id": int(row["id"]), "account": row["ibkr_account"], "base_currency": row["base_currency"]}
+
+    row = conn.execute(
+        """
+        SELECT a.id, a.ibkr_account, a.base_currency
+        FROM accounts a
+        WHERE a.id IN (SELECT account_id FROM trades)
+        LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return {"id": int(row["id"]), "account": row["ibkr_account"], "base_currency": row["base_currency"]}
+
     row = conn.execute("SELECT id, ibkr_account, base_currency FROM accounts LIMIT 1").fetchone()
     if row:
         return {"id": int(row["id"]), "account": row["ibkr_account"], "base_currency": row["base_currency"]}
-    account_id = upsert_account(conn, "LOCAL", settings.base_currency)
-    return {"id": account_id, "account": "LOCAL", "base_currency": settings.base_currency}
+    return None
 
 
 @app.on_event("startup")
 async def startup() -> None:
     init_db(settings.db_path)
     app.state.sync_manager = IBKRSyncManager(settings)
+    with get_connection(settings.db_path) as conn:
+        upsert_account(conn, "LOCAL", settings.base_currency)
     if settings.ib_auto_sync:
         app.state.sync_manager.start()
 
@@ -48,19 +82,6 @@ async def startup() -> None:
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok", "time": _utc_now()}
-
-
-@app.post("/sync/start")
-def sync_start() -> Dict[str, Any]:
-    status = app.state.sync_manager.start()
-    return {
-        "running": status.running,
-        "connected": status.connected,
-        "started_at": status.started_at,
-        "last_connected_at": status.last_connected_at,
-        "last_disconnected_at": status.last_disconnected_at,
-        "error": status.error,
-    }
 
 
 @app.post("/sync/stop")
@@ -109,6 +130,17 @@ def sync_health() -> Dict[str, Any]:
 def gateway_restart() -> Dict[str, Any]:
     if not settings.gateway_restart_enabled:
         raise HTTPException(status_code=400, detail="Gateway restart disabled")
+    if settings.gateway_restart_file:
+        try:
+            with open(settings.gateway_restart_file, "w", encoding="utf-8") as handle:
+                handle.write(_utc_now())
+            return {
+                "status": "restart_requested",
+                "method": "flag_file",
+                "path": settings.gateway_restart_file,
+            }
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
     try:
         restart_deployment(settings.gateway_deployment, settings.gateway_namespace)
         return {
@@ -120,16 +152,12 @@ def gateway_restart() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/sync/demo")
-def sync_demo() -> Dict[str, str]:
-    seed_demo_data(settings)
-    return {"status": "demo seeded"}
-
-
 @app.get("/positions")
 def positions() -> List[Dict[str, Any]]:
     with get_connection(settings.db_path) as conn:
         account = _get_default_account(conn)
+        if not account:
+            return []
         return get_positions(conn, account["id"], account["base_currency"])
 
 
@@ -137,6 +165,8 @@ def positions() -> List[Dict[str, Any]]:
 def positions_history() -> List[Dict[str, Any]]:
     with get_connection(settings.db_path) as conn:
         account = _get_default_account(conn)
+        if not account:
+            return []
         return get_history_positions(conn, account["id"], account["base_currency"])
 
 
@@ -144,6 +174,15 @@ def positions_history() -> List[Dict[str, Any]]:
 def pnl_summary() -> Dict[str, Any]:
     with get_connection(settings.db_path) as conn:
         account = _get_default_account(conn)
+        if not account:
+            return {
+                "account_id": None,
+                "base_currency": settings.base_currency,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "as_of": _utc_now(),
+            }
         return get_account_summary(conn, account["id"], account["base_currency"])
 
 
@@ -182,11 +221,25 @@ async def updates(ws: WebSocket) -> None:
         while True:
             with get_connection(settings.db_path) as conn:
                 account = _get_default_account(conn)
-                payload = {
-                    "summary": get_account_summary(conn, account["id"], account["base_currency"]),
-                    "positions": get_positions(conn, account["id"], account["base_currency"]),
-                    "history": get_history_positions(conn, account["id"], account["base_currency"]),
-                }
+                if not account:
+                    payload = {
+                        "summary": {
+                            "account_id": None,
+                            "base_currency": settings.base_currency,
+                            "realized_pnl": 0.0,
+                            "unrealized_pnl": 0.0,
+                            "total_pnl": 0.0,
+                            "as_of": _utc_now(),
+                        },
+                        "positions": [],
+                        "history": [],
+                    }
+                else:
+                    payload = {
+                        "summary": get_account_summary(conn, account["id"], account["base_currency"]),
+                        "positions": get_positions(conn, account["id"], account["base_currency"]),
+                        "history": get_history_positions(conn, account["id"], account["base_currency"]),
+                    }
             await ws.send_json(payload)
             await asyncio.sleep(1)
     except WebSocketDisconnect:

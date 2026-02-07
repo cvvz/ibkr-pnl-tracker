@@ -22,6 +22,7 @@ class Settings:
     gateway_namespace: str
     gateway_vnc_url: str
     gateway_restart_enabled: bool
+    gateway_restart_file: str
 
 
 def load_settings() -> Settings:
@@ -36,7 +37,7 @@ def load_settings() -> Settings:
     ib_auto_sync = os.getenv("IBKR_AUTO_SYNC", "true").lower() in {"1", "true", "yes"}
     ib_reconnect_min_delay = int(os.getenv("IBKR_RECONNECT_MIN_DELAY", "3"))
     ib_reconnect_max_delay = int(os.getenv("IBKR_RECONNECT_MAX_DELAY", "60"))
-    ib_keepalive_seconds = int(os.getenv("IBKR_KEEPALIVE_SECONDS", "30"))
+    ib_keepalive_seconds = int(os.getenv("IBKR_KEEPALIVE_SECONDS", "15"))
     gateway_deployment = os.getenv("IBKR_GATEWAY_DEPLOYMENT", "ib-gateway")
     gateway_namespace = os.getenv("IBKR_GATEWAY_NAMESPACE", "default")
     gateway_vnc_url = os.getenv("IBKR_GATEWAY_VNC_URL", "")
@@ -45,6 +46,7 @@ def load_settings() -> Settings:
         "true",
         "yes",
     }
+    gateway_restart_file = os.getenv("IBKR_GATEWAY_RESTART_FILE", "")
 
     return Settings(
         db_path=db_path,
@@ -62,4 +64,5 @@ def load_settings() -> Settings:
         gateway_namespace=gateway_namespace,
         gateway_vnc_url=gateway_vnc_url,
         gateway_restart_enabled=gateway_restart_enabled,
+        gateway_restart_file=gateway_restart_file,
     )

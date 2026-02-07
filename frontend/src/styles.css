@@ -234,7 +234,22 @@ h1 span {
   font-size: 24px;
 }
 
-.summary-card.accent {
+.summary-card.summary-pos {
+  background: linear-gradient(135deg, #e4f4ef, #f3fbf8);
+  border-color: rgba(42, 111, 125, 0.2);
+}
+
+.summary-card.summary-neg {
+  background: linear-gradient(135deg, #ffe1d5, #fff7ef);
+  border-color: rgba(217, 79, 42, 0.2);
+}
+
+.summary-card.total-pos {
+  background: linear-gradient(135deg, #e4f4ef, #f3fbf8);
+  border-color: rgba(42, 111, 125, 0.2);
+}
+
+.summary-card.total-neg {
   background: linear-gradient(135deg, #ffe1d5, #fff7ef);
   border-color: rgba(217, 79, 42, 0.2);
 }

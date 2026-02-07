@@ -49,12 +49,6 @@ uvicorn app.main:app --reload
 - `IBKR_GATEWAY_NAMESPACE` (default `default`)
 - `IBKR_GATEWAY_VNC_URL` (default empty)
 
-Start syncing:
-
-```bash
-curl -X POST http://localhost:8000/sync/start
-```
-
 Sync health:
 
 ```bash
@@ -65,12 +59,6 @@ Restart IB Gateway (requires k8s RBAC + env config):
 
 ```bash
 curl -X POST http://localhost:8000/gateway/restart
-```
-
-Seed demo data:
-
-```bash
-curl -X POST http://localhost:8000/sync/demo
 ```
 
 ## Frontend Setup
@@ -91,6 +79,9 @@ VITE_API_BASE=http://localhost:8000
 - The system computes realized PnL from trade history it receives. If you start after existing positions are open, the realized PnL before startup will not be included unless you backfill executions.
 - Average cost basis is used, not FIFO.
 - FX conversion uses live rates when available; missing FX defaults to 1.0.
+
+## TODO
+- Replace SQLite with a managed database for cross-cluster persistence.
 
 ## Kubernetes
 See `ibkr-pnl-tracker/k8s/README.txt` for AKS-ready manifests (frontend, backend, IB Gateway, VNC, RBAC).

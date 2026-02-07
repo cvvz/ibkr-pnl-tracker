@@ -4,6 +4,7 @@ set -euo pipefail
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_PASSWORD="${VNC_PASSWORD:-}"
+RESTART_FILE="${GATEWAY_RESTART_FILE:-/root/Jts/gateway-restart.flag}"
 export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.net.preferIPv4Stack=true"
 
 mkdir -p /tmp/.X11-unix
@@ -28,14 +29,50 @@ fi
 
 websockify --web /opt/novnc "$NOVNC_PORT" "localhost:$VNC_PORT" &
 
-if [ -f /opt/ibgateway/ibgatewaystart.sh ]; then
-  exec /opt/ibgateway/ibgatewaystart.sh
-fi
+start_gateway() {
+  if [ -f /opt/ibgateway/ibgatewaystart.sh ]; then
+    /opt/ibgateway/ibgatewaystart.sh
+    return
+  fi
+  if [ -f /opt/ibgateway/ibgateway ]; then
+    /opt/ibgateway/ibgateway
+    return
+  fi
+  echo "IB Gateway launch script not found in /opt/ibgateway" >&2
+  exit 1
+}
 
-if [ -f /opt/ibgateway/ibgateway ]; then
-  exec /opt/ibgateway/ibgateway
-fi
+kill_gateway() {
+  pkill -f "install4j.ibgateway.GWClient" >/dev/null 2>&1 || true
+}
 
-echo "IB Gateway launch script not found in /opt/ibgateway" >&2
-sleep 5
-exit 1
+while true; do
+  kill_gateway
+  start_gateway &
+  STARTER_PID=$!
+
+  GW_PID=""
+  for i in {1..30}; do
+    GW_PID="$(pgrep -n -f "install4j.ibgateway.GWClient" || true)"
+    if [ -n "$GW_PID" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  while true; do
+    if [ -f "$RESTART_FILE" ]; then
+      echo "Restart flag detected, restarting IB Gateway..."
+      rm -f "$RESTART_FILE"
+      kill_gateway
+      break
+    fi
+    if [ -n "$GW_PID" ] && ! kill -0 "$GW_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+
+  wait "$STARTER_PID" || true
+  sleep 2
+done
