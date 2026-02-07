@@ -5,5 +5,5 @@
 #
 # Notes:
 # - Replace image names with your registry if needed.
-# - Update IBKR_GATEWAY_VNC_URL to the external LB IP of ib-gateway-novnc service, e.g. http://<EXTERNAL_IP>:6080.
+# - Update IBKR_GATEWAY_VNC_URL to the external LB IP of ib-gateway-novnc service, e.g. http://<EXTERNAL_IP>:6080/vnc.html.
 # - For Vite, set VITE_API_BASE at build time to your backend external IP.

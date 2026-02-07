@@ -78,7 +78,7 @@ spec:
           image: theasp/novnc:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 6080
+            - containerPort: 8080
               name: http
           env:
             - name: VNC_SERVER
@@ -98,4 +98,4 @@ spec:
   ports:
     - name: http
       port: 6080
-      targetPort: 6080
+      targetPort: 8080
