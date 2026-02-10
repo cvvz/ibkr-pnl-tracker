@@ -28,31 +28,18 @@ body {
   padding: 56px clamp(20px, 6vw, 80px) 80px;
   position: relative;
   overflow: hidden;
+  max-width: 1500px;
+  margin: 0 auto;
 }
 
 .layout {
   display: grid;
   grid-template-columns: 260px 1fr;
-  gap: 32px;
-}
-
-.sidebar {
-  position: sticky;
-  top: 32px;
-  align-self: start;
-  background: var(--surface);
-  border-radius: 24px;
-  padding: 24px;
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  height: fit-content;
+  gap: 28px;
 }
 
 .brand span {
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.4em;
   text-transform: uppercase;
   color: var(--muted);
@@ -60,7 +47,7 @@ body {
 
 .brand strong {
   display: block;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .nav {
@@ -72,7 +59,7 @@ body {
 .nav-item {
   text-align: left;
   border: 1px solid var(--border);
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: 14px;
   background: transparent;
   cursor: pointer;
@@ -109,9 +96,30 @@ body {
 
 .hero {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 32px;
-  align-items: start;
+  grid-template-columns: minmax(220px, 1fr) minmax(480px, 760px);
+  gap: 24px;
+  align-items: stretch;
+}
+
+.hero-left {
+  background: var(--surface);
+  border-radius: 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hero-left .nav {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hero-left .nav-item {
+  flex: 1 1 160px;
 }
 
 .eyebrow {
@@ -194,7 +202,7 @@ h1 span {
 
 .status {
   font-family: "IBM Plex Mono", monospace;
-  font-size: 12px;
+  font-size: 11px;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
@@ -219,14 +227,17 @@ h1 span {
 .summary {
   display: grid;
   gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(880px, 100%);
 }
 
 .summary-card {
   background: var(--surface);
   border-radius: 20px;
-  padding: 18px 20px;
+  padding: 26px 28px;
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
+  min-height: 148px;
 }
 
 .summary-card p {
@@ -236,7 +247,13 @@ h1 span {
 }
 
 .summary-card strong {
-  font-size: 24px;
+  font-size: 32px;
+}
+
+.summary-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .summary-card.summary-pos {
@@ -260,13 +277,25 @@ h1 span {
 }
 
 .panel {
-  margin-top: 40px;
+  margin-top: 0;
   background: var(--surface);
   border-radius: 24px;
   padding: 24px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
+
+.panel-grid {
+  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 24px;
+}
+
+.panel-grid .panel {
+  margin-top: 0;
+}
+
 
 .panel-header {
   display: flex;
@@ -286,6 +315,127 @@ h1 span {
   background: var(--bg-alt);
   border-radius: 999px;
   border: 1px solid var(--border);
+}
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pnl-chart {
+  width: 100%;
+  height: 220px;
+}
+
+.chart-labels {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chart-labels span:nth-child(2) {
+  text-align: center;
+}
+
+.chart-labels span:nth-child(3) {
+  text-align: right;
+}
+
+.chart-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-right: 6px;
+}
+
+.legend-dot.cumulative {
+  background: var(--accent-2);
+}
+
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.health-card {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  padding: 12px;
+  background: var(--bg-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.health-card.good {
+  border-color: rgba(42, 111, 125, 0.35);
+}
+
+.health-card.warn {
+  border-color: rgba(165, 107, 0, 0.35);
+}
+
+.health-card.risk {
+  border-color: rgba(217, 79, 42, 0.35);
+}
+
+.health-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.health-ratio {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.health-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(28, 26, 23, 0.1);
+  overflow: hidden;
+}
+
+.health-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent-2);
+}
+
+.health-card.warn .health-bar span {
+  background: #a56b00;
+}
+
+.health-card.risk .health-bar span {
+  background: var(--accent);
+}
+
+.health-meta {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .order-form {
@@ -342,7 +492,7 @@ h1 span {
 }
 
 .row.current {
-  grid-template-columns: 1.2fr 0.7fr 1fr 1fr 1fr 1fr 1.4fr 0.8fr;
+  grid-template-columns: 1.2fr 0.7fr 1fr 1fr 1fr 1fr 1fr 1.4fr 0.8fr;
 }
 
 .row.history {
@@ -433,8 +583,13 @@ h1 span {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
-    position: relative;
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .summary {
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .row {

@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 
@@ -22,6 +23,22 @@ def _utc_now() -> str:
 
 
 _NON_PRIMARY_EXCHANGES = {"IBKRATS", "OVERNIGHT"}
+_EASTERN_TZ = ZoneInfo("America/New_York")
+_ACCOUNT_SUMMARY_TAGS = {
+    "NetLiquidation": "net_liquidation",
+    "TotalCashValue": "total_cash_value",
+    "AvailableFunds": "available_funds",
+    "ExcessLiquidity": "excess_liquidity",
+    "InitMarginReq": "init_margin_req",
+    "MaintMarginReq": "maint_margin_req",
+    "GrossPositionValue": "gross_position_value",
+    "ShortMarketValue": "short_market_value",
+}
+
+
+def _trade_date_et(now: dt.datetime | None = None) -> str:
+    current = now or dt.datetime.now(tz=_EASTERN_TZ)
+    return current.date().isoformat()
 
 
 def _normalize_side(side: str) -> str:
@@ -258,6 +275,8 @@ class IBKRSyncManager:
                 pending_commission_reports: dict[str, tuple[float, float]] = {}
                 pnl_req_by_con: dict[int, int] = {}
                 con_by_req: dict[int, int] = {}
+                account_pnl_req_id: int | None = None
+                account_summary_req_id: int | None = None
 
                 def set_order_result(request_id: str, result: OrderResult) -> None:
                     with self._order_lock:
@@ -273,6 +292,15 @@ class IBKRSyncManager:
 
                 def mark_update() -> None:
                     self._status.last_update = _utc_now()
+
+                def coerce_float(value: object) -> float | None:
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        return None
+                    if not math.isfinite(number):
+                        return None
+                    return number
 
                 def update_trade_from_report(exec_id: str, commission: float, realized: float) -> None:
                     row = conn.execute(
@@ -376,6 +404,85 @@ class IBKRSyncManager:
                             (trade_time, _utc_now(), row["id"]),
                         )
                         conn.commit()
+
+                def update_account_daily_pnl(daily_value: float) -> None:
+                    trade_date = _trade_date_et()
+                    conn.execute(
+                        """
+                        INSERT INTO account_daily_pnl
+                            (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(account_id, trade_date) DO UPDATE
+                        SET daily_pnl = excluded.daily_pnl,
+                            updated_at = excluded.updated_at
+                        """,
+                        (account_id, trade_date, daily_value, 0.0, _utc_now()),
+                    )
+                    rows = conn.execute(
+                        """
+                        SELECT id, daily_pnl
+                        FROM account_daily_pnl
+                        WHERE account_id = ?
+                        ORDER BY trade_date
+                        """,
+                        (account_id,),
+                    ).fetchall()
+                    cumulative = 0.0
+                    updates: list[tuple[float, str, int]] = []
+                    now = _utc_now()
+                    for row in rows:
+                        cumulative += float(row["daily_pnl"])
+                        updates.append((cumulative, now, int(row["id"])))
+                    if updates:
+                        conn.executemany(
+                            "UPDATE account_daily_pnl SET cumulative_pnl = ?, updated_at = ? WHERE id = ?",
+                            updates,
+                        )
+
+                def update_account_pnl(realized_value: float, unrealized_value: float, daily_value: float) -> None:
+                    total_value = realized_value + unrealized_value
+                    conn.execute(
+                        """
+                        INSERT INTO account_pnl
+                            (account_id, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(account_id) DO UPDATE
+                        SET realized_pnl = excluded.realized_pnl,
+                            unrealized_pnl = excluded.unrealized_pnl,
+                            daily_pnl = excluded.daily_pnl,
+                            total_pnl = excluded.total_pnl,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            account_id,
+                            realized_value,
+                            unrealized_value,
+                            daily_value,
+                            total_value,
+                            _utc_now(),
+                        ),
+                    )
+                    update_account_daily_pnl(daily_value)
+                    conn.commit()
+                    mark_update()
+
+                def update_account_summary(tag: str, value: float) -> None:
+                    column = _ACCOUNT_SUMMARY_TAGS.get(tag)
+                    if not column:
+                        return
+                    conn.execute(
+                        f"""
+                        INSERT INTO account_summary
+                            (account_id, {column}, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(account_id) DO UPDATE
+                        SET {column} = excluded.{column},
+                            updated_at = excluded.updated_at
+                        """,
+                        (account_id, value, _utc_now()),
+                    )
+                    conn.commit()
+                    mark_update()
 
                 def insert_trade(
                     symbol: str,
@@ -486,6 +593,60 @@ class IBKRSyncManager:
                     realized = float(getattr(report, "realizedPNL", 0.0) or 0.0)
                     update_trade_from_report(exec_id, commission, realized)
 
+                def on_pnl(*args) -> None:
+                    account_code = None
+                    daily = None
+                    unrealized = None
+                    realized = None
+                    if len(args) == 1:
+                        pnl = args[0]
+                        account_code = getattr(pnl, "account", None)
+                        daily = getattr(pnl, "dailyPnL", None)
+                        unrealized = getattr(pnl, "unrealizedPnL", None)
+                        realized = getattr(pnl, "realizedPnL", None)
+                    elif len(args) == 4:
+                        account_code, daily, unrealized, realized = args
+                    elif len(args) >= 5:
+                        account_code = args[0]
+                        daily = args[2]
+                        unrealized = args[3]
+                        realized = args[4]
+                    if account_code and account_code != account:
+                        return
+                    realized_value = coerce_float(realized)
+                    unrealized_value = coerce_float(unrealized)
+                    if realized_value is None or unrealized_value is None:
+                        return
+                    daily_value = coerce_float(daily)
+                    if daily_value is None:
+                        daily_value = 0.0
+                    update_account_pnl(realized_value, unrealized_value, daily_value)
+
+                def on_account_summary(*args) -> None:
+                    if len(args) == 1:
+                        item = args[0]
+                        account_code = getattr(item, "account", None)
+                        tag = getattr(item, "tag", None)
+                        value = getattr(item, "value", None)
+                        currency = getattr(item, "currency", None)
+                    elif len(args) >= 4:
+                        account_code = args[1]
+                        tag = args[2]
+                        value = args[3]
+                        currency = args[4] if len(args) >= 5 else None
+                    else:
+                        return
+                    if account_code and account_code != account:
+                        return
+                    if currency and currency not in {"", "BASE", self.settings.base_currency}:
+                        return
+                    if not tag:
+                        return
+                    value_number = coerce_float(value)
+                    if value_number is None:
+                        return
+                    update_account_summary(tag, value_number)
+
                 def subscribe_pnl(con_id: int | None) -> None:
                     if not con_id or con_id in pnl_req_by_con:
                         return
@@ -595,8 +756,8 @@ class IBKRSyncManager:
                         """
                         INSERT INTO positions
                             (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl,
-                             unrealized_pnl, con_id, open_time, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             unrealized_pnl, daily_pnl, con_id, open_time, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(account_id, symbol, exchange, currency) DO UPDATE
                         SET qty = excluded.qty,
                             avg_cost = excluded.avg_cost,
@@ -613,6 +774,7 @@ class IBKRSyncManager:
                             qty,
                             avg_cost_value,
                             qty * avg_cost_value,
+                            0.0,
                             0.0,
                             0.0,
                             contract.conId,
@@ -650,6 +812,28 @@ class IBKRSyncManager:
                         fills = ib.reqExecutions()
                         for fill in fills:
                             on_exec(fill)
+                    except Exception:
+                        return
+
+                def request_account_pnl() -> None:
+                    nonlocal account_pnl_req_id
+                    try:
+                        pnl = ib.reqPnL(account, "")
+                    except Exception:
+                        return
+                    account_pnl_req_id = getattr(pnl, "reqId", None)
+
+                def request_account_summary() -> None:
+                    nonlocal account_summary_req_id
+                    try:
+                        summary = ib.accountSummary()
+                    except Exception:
+                        return
+                    account_summary_req_id = None
+                    for item in summary:
+                        on_account_summary(item)
+                    try:
+                        ib.reqAccountSummary()
                     except Exception:
                         return
 
@@ -711,14 +895,23 @@ class IBKRSyncManager:
                 def on_pnl_single(*args) -> None:
                     con_id = None
                     unrealized = None
+                    daily = None
                     if len(args) == 1:
                         pnl = args[0]
                         con_id = getattr(pnl, "conId", None)
                         unrealized = getattr(pnl, "unrealizedPnL", None)
+                        daily = getattr(pnl, "dailyPnL", None)
                     elif len(args) >= 4:
                         req_id = args[0]
-                        unrealized = args[3]
                         con_id = con_by_req.get(req_id)
+                        if len(args) >= 5:
+                            daily = args[2]
+                            unrealized = args[3]
+                            if daily is None and len(args) >= 5:
+                                daily = args[4]
+                        else:
+                            daily = args[1]
+                            unrealized = args[2]
                     if con_id is None or unrealized is None:
                         return
                     try:
@@ -727,24 +920,46 @@ class IBKRSyncManager:
                         return
                     if not math.isfinite(unrealized_value):
                         return
-                    conn.execute(
-                        """
-                        UPDATE positions
-                        SET unrealized_pnl = ?, updated_at = ?
-                        WHERE account_id = ? AND con_id = ?
-                        """,
-                        (unrealized_value, _utc_now(), account_id, con_id),
-                    )
+                    daily_value = None
+                    if daily is not None:
+                        try:
+                            daily_value = float(daily)
+                        except (TypeError, ValueError):
+                            daily_value = None
+                        if daily_value is not None and not math.isfinite(daily_value):
+                            daily_value = None
+                    if daily_value is None:
+                        conn.execute(
+                            """
+                            UPDATE positions
+                            SET unrealized_pnl = ?, updated_at = ?
+                            WHERE account_id = ? AND con_id = ?
+                            """,
+                            (unrealized_value, _utc_now(), account_id, con_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE positions
+                            SET unrealized_pnl = ?, daily_pnl = ?, updated_at = ?
+                            WHERE account_id = ? AND con_id = ?
+                            """,
+                            (unrealized_value, daily_value, _utc_now(), account_id, con_id),
+                        )
                     conn.commit()
                     mark_update()
 
                 ib.execDetailsEvent += on_exec
                 ib.commissionReportEvent += on_commission
                 ib.positionEvent += on_position
+                ib.pnlEvent += on_pnl
+                ib.accountSummaryEvent += on_account_summary
                 ib.pnlSingleEvent += on_pnl_single
 
                 request_positions()
                 request_executions()
+                request_account_pnl()
+                request_account_summary()
 
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()

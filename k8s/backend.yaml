@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: ib-gateway-data
+  name: ibkr-backend-data
   namespace: ibkr
 spec:
   accessModes:
@@ -13,39 +13,25 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ib-gateway
+  name: ibkr-backend
   namespace: ibkr
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: ib-gateway
+      app: ibkr-backend
   template:
     metadata:
       labels:
-        app: ib-gateway
+        app: ibkr-backend
     spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: aks-nodepool1-30958727-vmss000001
       containers:
-        - name: ib-gateway
-          image: cvvz/ib-gateway:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 4001
-              name: ib-api
-            - containerPort: 5900
-              name: vnc
-            - containerPort: 6080
-              name: novnc
-          env:
-            - name: VNC_PORT
-              value: "5900"
-            - name: NOVNC_PORT
-              value: "6080"
-            - name: GATEWAY_RESTART_FILE
-              value: /root/Jts/gateway-restart.flag
-          volumeMounts:
-            - name: ib-data
-              mountPath: /root/Jts
         - name: backend
           image: cvvz/ibkr-backend:latest
           imagePullPolicy: Always
@@ -54,7 +40,7 @@ spec:
               name: backend-http
           env:
             - name: IBKR_HOST
-              value: 127.0.0.1
+              value: ib-gateway
             - name: IBKR_PORT
               value: "4001"
             - name: IBKR_READONLY
@@ -76,39 +62,12 @@ spec:
             - name: IBKR_RECONNECT_MAX_DELAY
               value: "5"
           volumeMounts:
-            - name: ib-data
+            - name: backend-data
               mountPath: /app/data
       volumes:
-        - name: ib-data
+        - name: backend-data
           persistentVolumeClaim:
-            claimName: ib-gateway-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ib-gateway
-  namespace: ibkr
-spec:
-  selector:
-    app: ib-gateway
-  ports:
-    - name: ib-api
-      port: 4001
-      targetPort: 4001
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ib-gateway-novnc
-  namespace: ibkr
-spec:
-  type: LoadBalancer
-  selector:
-    app: ib-gateway
-  ports:
-    - name: http
-      port: 6080
-      targetPort: 6080
+            claimName: ibkr-backend-data
 ---
 apiVersion: v1
 kind: Service
@@ -118,7 +77,7 @@ metadata:
 spec:
   type: LoadBalancer
   selector:
-    app: ib-gateway
+    app: ibkr-backend
   ports:
     - name: http
       port: 8000

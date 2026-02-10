@@ -13,6 +13,11 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4
 });
 
+const percentFormatter = new Intl.NumberFormat("en-US", {
+  style: "percent",
+  maximumFractionDigits: 1
+});
+
 const formatDate = (value) => {
   if (!value) return "--";
   return value.split("T")[0] ?? value;
@@ -27,8 +32,10 @@ const buildIdempotencyKey = () => {
 
 function App() {
   const [summary, setSummary] = useState(null);
+  const [accountSummary, setAccountSummary] = useState(null);
   const [positions, setPositions] = useState([]);
   const [historyPositions, setHistoryPositions] = useState([]);
+  const [tradeSeries, setTradeSeries] = useState([]);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [ibStatus, setIbStatus] = useState({
     connected: false,
@@ -66,17 +73,47 @@ function App() {
 
   useEffect(() => {
     const fetchSnapshot = async () => {
-      const [summaryRes, positionsRes, historyRes] = await Promise.all([
-        fetch(`${API_BASE}/pnl/summary`),
-        fetch(`${API_BASE}/positions`),
-        fetch(`${API_BASE}/positions/history`)
-      ]);
+      const [summaryRes, positionsRes, historyRes, accountSummaryRes, tradeSeriesRes] =
+        await Promise.all([
+          fetch(`${API_BASE}/pnl/summary`),
+          fetch(`${API_BASE}/positions`),
+          fetch(`${API_BASE}/positions/history`),
+          fetch(`${API_BASE}/account/summary`),
+          fetch(`${API_BASE}/pnl/trade-cumulative`)
+        ]);
       setSummary(await summaryRes.json());
       setPositions(await positionsRes.json());
       setHistoryPositions(await historyRes.json());
+      setAccountSummary(await accountSummaryRes.json());
+      setTradeSeries(await tradeSeriesRes.json());
     };
 
     fetchSnapshot().catch(() => setWsStatus("error"));
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const fetchTradeSeries = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/pnl/trade-cumulative`);
+        const payload = await response.json();
+        if (active) {
+          setTradeSeries(payload);
+        }
+      } catch (error) {
+        if (active) {
+          setTradeSeries([]);
+        }
+      }
+    };
+
+    fetchTradeSeries();
+    const interval = setInterval(fetchTradeSeries, 15000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -122,6 +159,9 @@ function App() {
       setPositions(payload.positions);
       if (payload.history) {
         setHistoryPositions(payload.history);
+      }
+      if (payload.account_summary) {
+        setAccountSummary(payload.account_summary);
       }
     });
 
@@ -199,6 +239,134 @@ function App() {
     ? "error"
     : "disconnected";
 
+  const tradeCumulative = useMemo(() => {
+    if (positions.length === 0 && historyPositions.length === 0) {
+      return null;
+    }
+    const currentTotal = positions.reduce(
+      (sum, item) => sum + (item.total_pnl ?? 0),
+      0
+    );
+    const historyTotal = historyPositions.reduce(
+      (sum, item) => sum + (item.realized_pnl ?? 0),
+      0
+    );
+    return currentTotal + historyTotal;
+  }, [positions, historyPositions]);
+
+  const tradeChart = useMemo(() => {
+    if (!tradeSeries || tradeSeries.length === 0) {
+      return null;
+    }
+    const width = 640;
+    const height = 220;
+    const padding = 32;
+    const lastIndex = tradeSeries.length - 1;
+    const values = tradeSeries.map((item, index) => {
+      const value = item.cumulative_pnl ?? 0;
+      if (tradeCumulative != null && index === lastIndex) {
+        return tradeCumulative;
+      }
+      return value;
+    });
+    const allValues = [...values, 0];
+    const minValue = Math.min(...allValues);
+    const maxValue = Math.max(...allValues);
+    const range = maxValue - minValue || 1;
+    const stepX =
+      tradeSeries.length > 1
+        ? (width - padding * 2) / (tradeSeries.length - 1)
+        : 0;
+    const toPoint = (value, index) => {
+      const x = padding + index * stepX;
+      const y =
+        height -
+        padding -
+        ((value - minValue) / range) * (height - padding * 2);
+      return `${x},${y}`;
+    };
+    const points = values.map(toPoint).join(" ");
+    const labels = {
+      start: tradeSeries[0]?.trade_date,
+      mid:
+        tradeSeries[Math.floor((tradeSeries.length - 1) / 2)]?.trade_date ??
+        tradeSeries[0]?.trade_date,
+      end: tradeSeries[tradeSeries.length - 1]?.trade_date
+    };
+    return {
+      width,
+      height,
+      minValue,
+      maxValue,
+      points,
+      labels
+    };
+  }, [tradeSeries, tradeCumulative]);
+
+  const healthMetrics = useMemo(() => {
+    if (!accountSummary) {
+      return [];
+    }
+    const netLiq = accountSummary.net_liquidation;
+    const ratio = (value, denom) =>
+      value == null || denom == null || denom === 0 ? null : value / denom;
+    const classify = (value, direction, good, warn) => {
+      if (value == null) return "neutral";
+      if (direction === "low") {
+        if (value <= good) return "good";
+        if (value <= warn) return "warn";
+        return "risk";
+      }
+      if (value >= good) return "good";
+      if (value >= warn) return "warn";
+      return "risk";
+    };
+    return [
+      {
+        key: "net",
+        label: "Net Liquidation",
+        value: netLiq,
+        ratio: null,
+        status: "neutral"
+      },
+      {
+        key: "available",
+        label: "Available Funds",
+        value: accountSummary.available_funds,
+        ratio: ratio(accountSummary.available_funds, netLiq),
+        status: classify(ratio(accountSummary.available_funds, netLiq), "high", 0.3, 0.15)
+      },
+      {
+        key: "excess",
+        label: "Excess Liquidity",
+        value: accountSummary.excess_liquidity,
+        ratio: ratio(accountSummary.excess_liquidity, netLiq),
+        status: classify(ratio(accountSummary.excess_liquidity, netLiq), "high", 0.25, 0.1)
+      },
+      {
+        key: "margin",
+        label: "Margin Usage",
+        value: accountSummary.maint_margin_req,
+        ratio: ratio(accountSummary.maint_margin_req, netLiq),
+        status: classify(ratio(accountSummary.maint_margin_req, netLiq), "low", 0.35, 0.6)
+      },
+      {
+        key: "gross",
+        label: "Gross Exposure",
+        value: accountSummary.gross_position_value,
+        ratio: ratio(accountSummary.gross_position_value, netLiq),
+        status: classify(ratio(accountSummary.gross_position_value, netLiq), "low", 1.0, 1.5)
+      },
+      {
+        key: "short",
+        label: "Short Exposure",
+        value: accountSummary.short_market_value,
+        ratio: ratio(accountSummary.short_market_value, netLiq),
+        status: classify(ratio(accountSummary.short_market_value, netLiq), "low", 0.2, 0.35)
+      }
+    ];
+  }, [accountSummary]);
+
   const renderTrades = (positionId) => {
     const trades = tradesByPosition[positionId] || [];
     if (trades.length === 0) {
@@ -242,6 +410,9 @@ function App() {
         <span className={pos.unrealized_pnl >= 0 ? "pos" : "neg"}>
           {money.format(pos.unrealized_pnl)}
         </span>
+        <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
+          {money.format(pos.daily_pnl)}
+        </span>
         <span className={pos.total_pnl >= 0 ? "pos" : "neg"}>
           {money.format(pos.total_pnl)}
         </span>
@@ -280,126 +451,176 @@ function App() {
   );
 
   return (
-    <div className="page layout">
+    <div className="page">
       <div className="glow"></div>
-      <aside className="sidebar">
-        <div className="brand">
-          <span>IBKR</span>
-          <strong>PnL Tracker</strong>
-        </div>
-        <nav className="nav">
-          <button
-            className={`nav-item ${activeView === "current" ? "active" : ""}`}
-            onClick={() => setActiveView("current")}
-          >
-            Current Positions
-          </button>
-          <button
-            className={`nav-item ${activeView === "history" ? "active" : ""}`}
-            onClick={() => setActiveView("history")}
-          >
-            Historical Positions
-          </button>
-        </nav>
-        <div className="side-actions">
-          <div className="status-group">
-            <span className={`status ${wsStatus}`}>WS {wsStatus}</span>
-            <span className={`status ${ibkrStatusClass}`}>
-              {ibStatus.connected ? "IB Connected" : "IB Disconnected"}
-            </span>
-            {!ibStatus.connected && ibStatus.vnc_url && (
-              <button className="btn tiny" onClick={restartGateway}>
-                Re-auth (VNC)
-              </button>
-            )}
-            {ibStatus.error && (
-              <span className="status-note">{ibStatus.error}</span>
-            )}
-          </div>
-        </div>
-      </aside>
       <main className="content">
         <header className="hero">
-          <div>
-            <p className="eyebrow">IBKR Portfolio Console</p>
-            <h1>
-              IBKR-first PnL, unified.
-              <span>Positions, realized, unrealized, total.</span>
-            </h1>
-            <p className="subtitle">
-              Trades, positions, and PnL are displayed directly from IBKR push
-              data with minimal local transformation.
-            </p>
+          <div className="hero-left">
+            <div className="brand">
+              <span>IBKR</span>
+              <strong>PnL Tracker</strong>
+            </div>
+            <nav className="nav">
+              <button
+                className={`nav-item ${activeView === "current" ? "active" : ""}`}
+                onClick={() => setActiveView("current")}
+              >
+                Current Positions
+              </button>
+              <button
+                className={`nav-item ${activeView === "history" ? "active" : ""}`}
+                onClick={() => setActiveView("history")}
+              >
+                Historical Positions
+              </button>
+            </nav>
+            <div className="side-actions">
+              <div className="status-group">
+                <span className={`status ${wsStatus}`}>WS {wsStatus}</span>
+                <span className={`status ${ibkrStatusClass}`}>
+                  {ibStatus.connected ? "IB Connected" : "IB Disconnected"}
+                </span>
+                {!ibStatus.connected && ibStatus.vnc_url && (
+                  <button className="btn tiny" onClick={restartGateway}>
+                    Re-auth (VNC)
+                  </button>
+                )}
+                {ibStatus.error && (
+                  <span className="status-note">{ibStatus.error}</span>
+                )}
+              </div>
+            </div>
           </div>
           <div className="summary">
             <div
               className={`summary-card ${
-                summary
-                  ? summary.realized_pnl >= 0
+                summary?.daily_pnl != null
+                  ? summary.daily_pnl >= 0
                     ? "summary-pos"
                     : "summary-neg"
                   : "summary-pos"
               }`}
             >
-              <p>Realized</p>
+              <p>Daily PnL</p>
               <strong
                 className={
-                  summary
-                    ? summary.realized_pnl >= 0
+                  summary?.daily_pnl != null
+                    ? summary.daily_pnl >= 0
                       ? "pos"
                       : "neg"
                     : ""
                 }
               >
-                {summary ? money.format(summary.realized_pnl) : "--"}
+                {summary?.daily_pnl != null ? money.format(summary.daily_pnl) : "--"}
               </strong>
+              <div className="summary-sub">Latest daily PnL snapshot</div>
             </div>
             <div
               className={`summary-card ${
-                summary
-                  ? summary.unrealized_pnl >= 0
+                tradeCumulative != null
+                  ? tradeCumulative >= 0
                     ? "summary-pos"
                     : "summary-neg"
                   : "summary-pos"
               }`}
             >
-              <p>Unrealized</p>
+              <p>Cumulative PnL</p>
               <strong
                 className={
-                  summary
-                    ? summary.unrealized_pnl >= 0
+                  tradeCumulative != null
+                    ? tradeCumulative >= 0
                       ? "pos"
                       : "neg"
                     : ""
                 }
               >
-                {summary ? money.format(summary.unrealized_pnl) : "--"}
+                {tradeCumulative != null ? money.format(tradeCumulative) : "--"}
               </strong>
-            </div>
-            <div
-              className={`summary-card ${
-                summary
-                  ? summary.total_pnl >= 0
-                    ? "total-pos"
-                    : "total-neg"
-                  : "total-pos"
-              }`}
-            >
-              <p>Total</p>
-              <strong
-                className={
-                  summary
-                    ? summary.total_pnl >= 0
-                      ? "pos"
-                      : "neg"
-                    : ""
-                }
-              >
-                {summary ? money.format(summary.total_pnl) : "--"}
-              </strong>
+              <div className="summary-sub">
+                Current positions total + historical realized
+              </div>
             </div>
           </div>
         </header>
+
+        <section className="panel-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <h2>Daily PnL Trend</h2>
+              <span className="tag">Trade PnL</span>
+            </div>
+            {tradeChart ? (
+              <div className="chart">
+                <svg
+                  className="pnl-chart"
+                  viewBox={`0 0 ${tradeChart.width} ${tradeChart.height}`}
+                  role="img"
+                  aria-label="Trade cumulative PnL curve"
+                >
+                  <defs>
+                    <linearGradient id="tradeLine" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#2a6f7d" />
+                      <stop offset="100%" stopColor="#6bb49c" />
+                    </linearGradient>
+                  </defs>
+                  <polyline
+                    className="pnl-line cumulative"
+                    points={tradeChart.points}
+                    fill="none"
+                    stroke="url(#tradeLine)"
+                    strokeWidth="3"
+                  />
+                </svg>
+                <div className="chart-labels">
+                  <span>{tradeChart.labels.start ?? "--"}</span>
+                  <span>{tradeChart.labels.mid ?? "--"}</span>
+                  <span>{tradeChart.labels.end ?? "--"}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="row empty">No trade PnL yet.</div>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-header">
+              <h2>Account Health</h2>
+              <span className="tag">Liquidity & Risk</span>
+            </div>
+            {healthMetrics.length === 0 ? (
+              <div className="row empty">No account summary yet.</div>
+            ) : (
+              <>
+                <div className="health-grid">
+                  {healthMetrics.map((metric) => (
+                    <div className={`health-card ${metric.status}`} key={metric.key}>
+                      <div className="health-label">{metric.label}</div>
+                      <strong>
+                        {metric.value == null ? "--" : money.format(metric.value)}
+                      </strong>
+                      {metric.ratio != null && (
+                        <span className="health-ratio">
+                          {percentFormatter.format(metric.ratio)}
+                        </span>
+                      )}
+                      {metric.ratio != null && (
+                        <div className="health-bar">
+                          <span
+                            style={{
+                              width: `${Math.min(Math.abs(metric.ratio) * 100, 100)}%`
+                            }}
+                          ></span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="health-meta">
+                  Updated: {accountSummary?.as_of ? accountSummary.as_of : "--"}
+                </div>
+              </>
+            )}
+          </div>
+        </section>
 
         <section className="panel">
           <div className="panel-header">
@@ -502,6 +723,7 @@ function App() {
                 <span>Avg Cost</span>
                 <span>Realized</span>
                 <span>Unrealized</span>
+                <span>Daily</span>
                 <span>Total</span>
                 <span>Time</span>
                 <span></span>

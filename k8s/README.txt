@@ -1,7 +1,7 @@
 # Apply all manifests
-# kubectl apply -f k8s/backend-ib-gateway.yaml
+# kubectl apply -f k8s/ib-gateway.yaml
+# kubectl apply -f k8s/backend.yaml
 # kubectl apply -f k8s/frontend.yaml
-# kubectl apply -f k8s/backend-ib-gateway.yaml
 #
 # Notes:
 # - Replace image names with your registry if needed.

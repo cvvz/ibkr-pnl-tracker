@@ -67,6 +67,44 @@ SCHEMA_STATEMENTS: Iterable[str] = (
         FOREIGN KEY(account_id) REFERENCES accounts(id)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS account_pnl (
+        account_id INTEGER PRIMARY KEY,
+        realized_pnl REAL NOT NULL DEFAULT 0,
+        unrealized_pnl REAL NOT NULL DEFAULT 0,
+        daily_pnl REAL NOT NULL DEFAULT 0,
+        total_pnl REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(account_id) REFERENCES accounts(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS account_summary (
+        account_id INTEGER PRIMARY KEY,
+        net_liquidation REAL,
+        total_cash_value REAL,
+        available_funds REAL,
+        excess_liquidity REAL,
+        init_margin_req REAL,
+        maint_margin_req REAL,
+        gross_position_value REAL,
+        short_market_value REAL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(account_id) REFERENCES accounts(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS account_daily_pnl (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        trade_date TEXT NOT NULL,
+        daily_pnl REAL NOT NULL DEFAULT 0,
+        cumulative_pnl REAL NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        UNIQUE(account_id, trade_date),
+        FOREIGN KEY(account_id) REFERENCES accounts(id)
+    )
+    """,
 )
 
 
@@ -99,6 +137,7 @@ def init_db(db_path: Path) -> None:
         _ensure_column(conn, "trades", "perm_id", "perm_id TEXT")
         _ensure_column(conn, "positions", "open_time", "open_time TEXT")
         _ensure_column(conn, "positions", "unrealized_pnl", "unrealized_pnl REAL NOT NULL DEFAULT 0")
+        _ensure_column(conn, "positions", "daily_pnl", "daily_pnl REAL NOT NULL DEFAULT 0")
         _ensure_column(conn, "positions", "con_id", "con_id INTEGER")
         conn.commit()
 

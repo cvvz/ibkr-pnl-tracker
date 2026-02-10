@@ -15,7 +15,14 @@ from .config import load_settings
 from .db import get_connection, init_db, upsert_account
 from .ibkr_sync import IBKRSyncManager, OrderPayload
 from .k8s import restart_deployment
-from .pnl import get_account_summary, get_history_positions, get_positions
+from .pnl import (
+    get_account_daily_pnl,
+    get_account_snapshot,
+    get_account_summary,
+    get_history_positions,
+    get_positions,
+    get_trade_cumulative,
+)
 
 
 settings = load_settings()
@@ -291,10 +298,50 @@ def pnl_summary() -> Dict[str, Any]:
                 "base_currency": settings.base_currency,
                 "realized_pnl": 0.0,
                 "unrealized_pnl": 0.0,
+                "daily_pnl": 0.0,
                 "total_pnl": 0.0,
                 "as_of": _utc_now(),
             }
         return get_account_summary(conn, account["id"], account["base_currency"])
+
+
+@app.get("/pnl/daily")
+def pnl_daily() -> List[Dict[str, Any]]:
+    with get_connection(settings.db_path) as conn:
+        account = _get_default_account(conn)
+        if not account:
+            return []
+        return get_account_daily_pnl(conn, account["id"])
+
+
+@app.get("/account/summary")
+def account_summary() -> Dict[str, Any]:
+    with get_connection(settings.db_path) as conn:
+        account = _get_default_account(conn)
+        if not account:
+            return {
+                "account_id": None,
+                "base_currency": settings.base_currency,
+                "net_liquidation": None,
+                "total_cash_value": None,
+                "available_funds": None,
+                "excess_liquidity": None,
+                "init_margin_req": None,
+                "maint_margin_req": None,
+                "gross_position_value": None,
+                "short_market_value": None,
+                "as_of": _utc_now(),
+            }
+        return get_account_snapshot(conn, account["id"], account["base_currency"])
+
+
+@app.get("/pnl/trade-cumulative")
+def trade_cumulative() -> List[Dict[str, Any]]:
+    with get_connection(settings.db_path) as conn:
+        account = _get_default_account(conn)
+        if not account:
+            return []
+        return get_trade_cumulative(conn, account["id"])
 
 
 @app.get("/trades")
@@ -374,17 +421,36 @@ async def updates(ws: WebSocket) -> None:
                             "base_currency": settings.base_currency,
                             "realized_pnl": 0.0,
                             "unrealized_pnl": 0.0,
+                            "daily_pnl": 0.0,
                             "total_pnl": 0.0,
                             "as_of": _utc_now(),
                         },
                         "positions": [],
                         "history": [],
+                        "daily_pnl": [],
+                        "account_summary": {
+                            "account_id": None,
+                            "base_currency": settings.base_currency,
+                            "net_liquidation": None,
+                            "total_cash_value": None,
+                            "available_funds": None,
+                            "excess_liquidity": None,
+                            "init_margin_req": None,
+                            "maint_margin_req": None,
+                            "gross_position_value": None,
+                            "short_market_value": None,
+                            "as_of": _utc_now(),
+                        },
                     }
                 else:
                     payload = {
                         "summary": get_account_summary(conn, account["id"], account["base_currency"]),
                         "positions": get_positions(conn, account["id"], account["base_currency"]),
                         "history": get_history_positions(conn, account["id"], account["base_currency"]),
+                        "daily_pnl": get_account_daily_pnl(conn, account["id"]),
+                        "account_summary": get_account_snapshot(
+                            conn, account["id"], account["base_currency"]
+                        ),
                     }
             await ws.send_json(payload)
             await asyncio.sleep(1)
