@@ -12,6 +12,8 @@ class Settings:
     ib_host: str
     ib_port: int
     ib_client_id: int
+    ib_order_client_id: int
+    ib_order_queue_max: int
     ib_readonly: bool
     demo_mode: bool
     ib_auto_sync: bool
@@ -32,6 +34,8 @@ def load_settings() -> Settings:
     ib_host = os.getenv("IBKR_HOST", "127.0.0.1")
     ib_port = int(os.getenv("IBKR_PORT", "7497"))
     ib_client_id = int(os.getenv("IBKR_CLIENT_ID", "1"))
+    ib_order_client_id = int(os.getenv("IBKR_ORDER_CLIENT_ID", str(ib_client_id + 1)))
+    ib_order_queue_max = int(os.getenv("IBKR_ORDER_QUEUE_MAX", "50"))
     ib_readonly = os.getenv("IBKR_READONLY", "true").lower() in {"1", "true", "yes"}
     demo_mode = os.getenv("IBKR_DEMO_MODE", "false").lower() in {"1", "true", "yes"}
     ib_auto_sync = os.getenv("IBKR_AUTO_SYNC", "true").lower() in {"1", "true", "yes"}
@@ -54,6 +58,8 @@ def load_settings() -> Settings:
         ib_host=ib_host,
         ib_port=ib_port,
         ib_client_id=ib_client_id,
+        ib_order_client_id=ib_order_client_id,
+        ib_order_queue_max=ib_order_queue_max,
         ib_readonly=ib_readonly,
         demo_mode=demo_mode,
         ib_auto_sync=ib_auto_sync,

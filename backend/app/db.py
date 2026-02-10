@@ -27,6 +27,7 @@ SCHEMA_STATEMENTS: Iterable[str] = (
         realized_pnl REAL NOT NULL DEFAULT 0,
         trade_time TEXT NOT NULL,
         ibkr_exec_id TEXT UNIQUE,
+        perm_id TEXT,
         FOREIGN KEY(account_id) REFERENCES accounts(id)
     )
     """,
@@ -41,6 +42,8 @@ SCHEMA_STATEMENTS: Iterable[str] = (
         avg_cost REAL NOT NULL,
         total_cost REAL NOT NULL,
         realized_pnl REAL NOT NULL DEFAULT 0,
+        unrealized_pnl REAL NOT NULL DEFAULT 0,
+        con_id INTEGER,
         open_time TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(account_id, symbol, exchange, currency),
@@ -61,40 +64,6 @@ SCHEMA_STATEMENTS: Iterable[str] = (
         open_time TEXT NOT NULL,
         close_time TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS prices (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT NOT NULL,
-        exchange TEXT,
-        currency TEXT NOT NULL,
-        last REAL,
-        bid REAL,
-        ask REAL,
-        update_time TEXT NOT NULL,
-        UNIQUE(symbol, exchange, currency)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS fx_rates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        from_ccy TEXT NOT NULL,
-        to_ccy TEXT NOT NULL,
-        rate REAL NOT NULL,
-        update_time TEXT NOT NULL,
-        UNIQUE(from_ccy, to_ccy)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS pnl_snapshots (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id INTEGER NOT NULL,
-        timestamp TEXT NOT NULL,
-        realized_pnl REAL NOT NULL,
-        unrealized_pnl REAL NOT NULL,
-        total_pnl REAL NOT NULL,
         FOREIGN KEY(account_id) REFERENCES accounts(id)
     )
     """,
@@ -127,7 +96,10 @@ def init_db(db_path: Path) -> None:
         for stmt in SCHEMA_STATEMENTS:
             conn.execute(stmt)
         _ensure_column(conn, "trades", "position_id", "position_id INTEGER")
+        _ensure_column(conn, "trades", "perm_id", "perm_id TEXT")
         _ensure_column(conn, "positions", "open_time", "open_time TEXT")
+        _ensure_column(conn, "positions", "unrealized_pnl", "unrealized_pnl REAL NOT NULL DEFAULT 0")
+        _ensure_column(conn, "positions", "con_id", "con_id INTEGER")
         conn.commit()
 
 

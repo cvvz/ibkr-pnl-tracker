@@ -211,6 +211,11 @@ h1 span {
   border-color: rgba(217, 79, 42, 0.3);
 }
 
+.status.warning {
+  color: #a56b00;
+  border-color: rgba(165, 107, 0, 0.3);
+}
+
 .summary {
   display: grid;
   gap: 16px;
@@ -283,6 +288,42 @@ h1 span {
   border: 1px solid var(--border);
 }
 
+.order-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.order-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.order-form input,
+.order-form select {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--ink);
+  background: #fff;
+}
+
+.order-form label.disabled {
+  opacity: 0.6;
+}
+
+.order-form .btn {
+  height: 44px;
+}
+
 .table {
   display: grid;
   gap: 8px;
@@ -295,10 +336,17 @@ h1 span {
 
 .row {
   display: grid;
-  grid-template-columns: 1.2fr 0.7fr 1fr 1fr 1fr 1fr 1fr 1.6fr 0.8fr;
   gap: 12px;
   align-items: center;
   padding: 10px 0;
+}
+
+.row.current {
+  grid-template-columns: 1.2fr 0.7fr 1fr 1fr 1fr 1fr 1.4fr 0.8fr;
+}
+
+.row.history {
+  grid-template-columns: 1.2fr 1.8fr 1fr 0.8fr;
 }
 
 .row.header {
@@ -354,7 +402,7 @@ h1 span {
 
 .trade-row {
   display: grid;
-  grid-template-columns: 1.6fr 0.6fr 0.6fr 0.8fr 0.6fr 0.8fr;
+  grid-template-columns: 1.6fr 0.6fr 0.6fr 0.7fr 0.7fr 0.8fr;
   gap: 8px;
   font-size: 12px;
 }

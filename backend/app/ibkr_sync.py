@@ -1,25 +1,145 @@
 from __future__ import annotations
 
-import datetime as dt
 import asyncio
+import datetime as dt
+import math
+import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
+from queue import Empty, Full, Queue
 from typing import Optional
 
-from ib_insync import Forex, IB, Position
+from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 
 from .config import Settings
 from .db import get_connection, upsert_account
-from .portfolio import apply_trade
 
 
 def _utc_now() -> str:
     return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
 
 
-def _bj_now() -> str:
-    return dt.datetime.now(tz=dt.timezone(dt.timedelta(hours=8))).isoformat()
+_NON_PRIMARY_EXCHANGES = {"IBKRATS", "OVERNIGHT"}
+
+
+def _normalize_side(side: str) -> str:
+    normalized = side.strip().lower()
+    if normalized in {"bot", "buy"}:
+        return "buy"
+    if normalized in {"sld", "sell"}:
+        return "sell"
+    return normalized
+
+
+def _resolve_trade_exchange(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    currency: str,
+    exchange: str,
+) -> str:
+    exchange = exchange or ""
+    rows = conn.execute(
+        """
+        SELECT exchange
+        FROM positions
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+        """,
+        (account_id, symbol, currency),
+    ).fetchall()
+    if not rows:
+        return exchange
+    for row in rows:
+        if row["exchange"] == exchange:
+            return exchange
+    for row in rows:
+        if row["exchange"] and row["exchange"] not in _NON_PRIMARY_EXCHANGES:
+            return row["exchange"]
+    return rows[0]["exchange"]
+
+
+def _trade_time(value: dt.datetime | None) -> str:
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return value.isoformat()
+    return _utc_now()
+
+
+def _get_last_close_time(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    currency: str,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT MAX(close_time) AS last_close
+        FROM positions_history
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+        """,
+        (account_id, symbol, currency),
+    ).fetchone()
+    return row["last_close"] if row and row["last_close"] else None
+
+
+def _get_first_trade_time(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    currency: str,
+    after_time: str | None = None,
+) -> str | None:
+    query = """
+        SELECT MIN(trade_time) AS first_trade
+        FROM trades
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+    """
+    params: list[object] = [account_id, symbol, currency]
+    if after_time:
+        query += " AND trade_time > ?"
+        params.append(after_time)
+    row = conn.execute(query, params).fetchone()
+    return row["first_trade"] if row and row["first_trade"] else None
+
+
+def _get_last_trade_time(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    currency: str,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT MAX(trade_time) AS last_trade
+        FROM trades
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+        """,
+        (account_id, symbol, currency),
+    ).fetchone()
+    return row["last_trade"] if row and row["last_trade"] else None
+
+
+def _sum_realized(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    currency: str,
+    start_time: str,
+    end_time: str,
+) -> float:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM trades
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+          AND trade_time >= ? AND trade_time <= ?
+        """,
+        (account_id, symbol, currency, start_time, end_time),
+    ).fetchone()
+    return float(row["total"]) if row else 0.0
 
 
 @dataclass
@@ -33,12 +153,42 @@ class SyncStatus:
     last_disconnected_at: Optional[str] = None
 
 
+@dataclass
+class OrderPayload:
+    symbol: str
+    qty: float
+    side: str
+    order_type: str
+    price: float | None
+    exchange: str | None
+    currency: str | None
+    tif: str | None
+    account: str | None
+
+
+@dataclass
+class OrderJob:
+    request_id: str
+    payload: OrderPayload
+
+
+@dataclass
+class OrderResult:
+    success: bool
+    result: dict | None = None
+    error: str | None = None
+    request_id: str | None = None
+
+
 class IBKRSyncManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._status = SyncStatus(running=False)
+        self._order_queue: Queue[OrderJob] = Queue(maxsize=self.settings.ib_order_queue_max)
+        self._order_waiters: dict[str, tuple[threading.Event, OrderResult]] = {}
+        self._order_lock = threading.Lock()
 
     def status(self) -> SyncStatus:
         return self._status
@@ -55,6 +205,33 @@ class IBKRSyncManager:
         self._stop_event.set()
         return self._status
 
+    def enqueue_order(
+        self,
+        payload: OrderPayload,
+        request_id: str | None = None,
+        timeout: float = 8.0,
+    ) -> OrderResult:
+        if not self._status.connected:
+            return OrderResult(success=False, error="IB Gateway disconnected")
+        request_id = request_id or uuid.uuid4().hex
+        event = threading.Event()
+        result = OrderResult(success=False, error="Order queued", request_id=request_id)
+        with self._order_lock:
+            self._order_waiters[request_id] = (event, result)
+        try:
+            self._order_queue.put_nowait(OrderJob(request_id=request_id, payload=payload))
+        except Full:
+            with self._order_lock:
+                self._order_waiters.pop(request_id, None)
+            return OrderResult(success=False, error="Order queue full", request_id=request_id)
+        if event.wait(timeout):
+            return result
+        return OrderResult(
+            success=True,
+            result={"status": "queued", "request_id": request_id},
+            request_id=request_id,
+        )
+
     def _run(self) -> None:
         asyncio.set_event_loop(asyncio.new_event_loop())
         self._status = SyncStatus(running=True, started_at=_utc_now())
@@ -62,7 +239,7 @@ class IBKRSyncManager:
 
         while not self._stop_event.is_set():
             ib = IB()
-            conn = None
+            conn: sqlite3.Connection | None = None
             try:
                 ib.connect(
                     self.settings.ib_host,
@@ -70,7 +247,6 @@ class IBKRSyncManager:
                     clientId=self.settings.ib_client_id,
                     readonly=self.settings.ib_readonly,
                 )
-                ib.reqMarketDataType(3)
                 self._status.connected = True
                 self._status.last_connected_at = _utc_now()
                 self._status.error = None
@@ -79,24 +255,296 @@ class IBKRSyncManager:
                 account = ib.managedAccounts()[0] if ib.managedAccounts() else "LOCAL"
                 account_id = upsert_account(conn, account, self.settings.base_currency)
 
-                contracts = {}
-                fx_contracts = {}
+                pending_commission_reports: dict[str, tuple[float, float]] = {}
+                pnl_req_by_con: dict[int, int] = {}
+                con_by_req: dict[int, int] = {}
 
-                def on_exec(trade, fill):
-                    contract = trade.contract
-                    apply_trade(
+                def set_order_result(request_id: str, result: OrderResult) -> None:
+                    with self._order_lock:
+                        waiter = self._order_waiters.pop(request_id, None)
+                    if not waiter:
+                        return
+                    event, ref = waiter
+                    ref.success = result.success
+                    ref.result = result.result
+                    ref.error = result.error
+                    ref.request_id = request_id
+                    event.set()
+
+                def mark_update() -> None:
+                    self._status.last_update = _utc_now()
+
+                def update_trade_from_report(exec_id: str, commission: float, realized: float) -> None:
+                    row = conn.execute(
+                        "SELECT id, symbol, exchange, currency, trade_time FROM trades WHERE ibkr_exec_id = ?",
+                        (exec_id,),
+                    ).fetchone()
+                    if not row:
+                        pending_commission_reports[exec_id] = (commission, realized)
+                        return
+                    conn.execute(
+                        "UPDATE trades SET commission = ?, realized_pnl = ? WHERE id = ?",
+                        (commission, realized, row["id"]),
+                    )
+                    conn.commit()
+                    maybe_update_history_from_trade(
+                        row["symbol"],
+                        row["exchange"],
+                        row["currency"],
+                        row["trade_time"],
+                        realized,
+                    )
+                    mark_update()
+
+                def maybe_update_history_from_trade(
+                    symbol: str,
+                    exchange: str,
+                    currency: str,
+                    trade_time: str,
+                    realized: float,
+                ) -> None:
+                    if realized == 0.0:
+                        return
+                    open_row = conn.execute(
+                        """
+                        SELECT id
+                        FROM positions
+                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        """,
+                        (account_id, symbol, currency),
+                    ).fetchone()
+                    if open_row:
+                        return
+                    history_row = conn.execute(
+                        """
+                        SELECT id, open_time, close_time
+                        FROM positions_history
+                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        ORDER BY close_time DESC
+                        LIMIT 1
+                        """,
+                        (account_id, symbol, currency),
+                    ).fetchone()
+                    if not history_row:
+                        return
+                    try:
+                        trade_dt = dt.datetime.fromisoformat(trade_time)
+                    except ValueError:
+                        trade_dt = None
+                    try:
+                        close_dt = dt.datetime.fromisoformat(history_row["close_time"])
+                    except ValueError:
+                        close_dt = None
+                    if trade_dt and close_dt:
+                        new_close = trade_time if trade_dt >= close_dt else history_row["close_time"]
+                    else:
+                        new_close = trade_time
+                    realized_total = _sum_realized(
+                        conn,
+                        account_id,
+                        symbol,
+                        currency,
+                        history_row["open_time"],
+                        new_close,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE positions_history
+                        SET close_time = ?, realized_pnl = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (new_close, realized_total, _utc_now(), history_row["id"]),
+                    )
+                    conn.commit()
+
+                def maybe_update_open_time(
+                    symbol: str, currency: str, trade_time: str
+                ) -> None:
+                    row = conn.execute(
+                        """
+                        SELECT id, open_time
+                        FROM positions
+                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        """,
+                        (account_id, symbol, currency),
+                    ).fetchone()
+                    if not row or not row["open_time"]:
+                        return
+                    if trade_time < row["open_time"]:
+                        conn.execute(
+                            "UPDATE positions SET open_time = ?, updated_at = ? WHERE id = ?",
+                            (trade_time, _utc_now(), row["id"]),
+                        )
+                        conn.commit()
+
+                def insert_trade(
+                    symbol: str,
+                    exchange: str,
+                    currency: str,
+                    side: str,
+                    qty: float,
+                    price: float,
+                    commission: float,
+                    realized: float,
+                    trade_time: str,
+                    exec_id: str | None,
+                    perm_id: int | None,
+                ) -> None:
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO trades
+                                (account_id, symbol, exchange, currency, side, qty, price, commission, realized_pnl,
+                                 trade_time, ibkr_exec_id, perm_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                account_id,
+                                symbol,
+                                exchange,
+                                currency,
+                                side,
+                                float(qty),
+                                float(price),
+                                float(commission),
+                                float(realized),
+                                trade_time,
+                                exec_id,
+                                perm_id,
+                            ),
+                        )
+                        conn.commit()
+                        mark_update()
+                    except sqlite3.IntegrityError:
+                        return
+                    if exec_id and exec_id in pending_commission_reports:
+                        pending = pending_commission_reports.pop(exec_id)
+                        update_trade_from_report(exec_id, pending[0], pending[1])
+                    maybe_update_open_time(symbol, currency, trade_time)
+                    maybe_update_history_from_trade(
+                        symbol,
+                        exchange,
+                        currency,
+                        trade_time,
+                        realized,
+                    )
+
+                def on_exec(trade_or_fill, fill=None):
+                    if fill is None:
+                        fill = trade_or_fill
+                        contract = fill.contract
+                    else:
+                        contract = trade_or_fill.contract
+                    execution = getattr(fill, "execution", None)
+                    if execution is None:
+                        return
+                    exec_account = getattr(execution, "acctNumber", None) or getattr(
+                        execution, "account", None
+                    )
+                    if exec_account and exec_account != account:
+                        return
+                    trade_exchange = _resolve_trade_exchange(
                         conn,
                         account_id,
                         contract.symbol,
-                        contract.exchange or "",
                         contract.currency,
-                        fill.execution.side,
-                        fill.execution.shares,
-                        fill.execution.price,
-                        fill.commissionReport.commission or 0.0,
-                        fill.time.isoformat(),
-                        fill.execution.execId,
+                        contract.exchange or "",
                     )
+                    exec_id = execution.execId or None
+                    perm_id = execution.permId if execution.permId else None
+                    commission = 0.0
+                    realized = 0.0
+                    report = getattr(fill, "commissionReport", None)
+                    if report:
+                        commission = float(report.commission or 0.0)
+                        realized = float(report.realizedPNL or 0.0)
+                    insert_trade(
+                        contract.symbol,
+                        trade_exchange,
+                        contract.currency,
+                        _normalize_side(execution.side),
+                        float(execution.shares),
+                        float(execution.price),
+                        commission,
+                        realized,
+                        _trade_time(getattr(fill, "time", None)),
+                        exec_id,
+                        perm_id,
+                    )
+
+                def on_commission(*args):
+                    if len(args) == 1:
+                        report = args[0]
+                    elif len(args) >= 3:
+                        report = args[2]
+                    else:
+                        return
+                    exec_id = getattr(report, "execId", None)
+                    if not exec_id:
+                        return
+                    commission = float(getattr(report, "commission", 0.0) or 0.0)
+                    realized = float(getattr(report, "realizedPNL", 0.0) or 0.0)
+                    update_trade_from_report(exec_id, commission, realized)
+
+                def subscribe_pnl(con_id: int | None) -> None:
+                    if not con_id or con_id in pnl_req_by_con:
+                        return
+                    try:
+                        pnl = ib.reqPnLSingle(account, "", con_id)
+                    except Exception:
+                        return
+                    req_id = getattr(pnl, "reqId", None)
+                    if req_id is None:
+                        return
+                    pnl_req_by_con[con_id] = req_id
+                    con_by_req[req_id] = con_id
+
+                def unsubscribe_pnl(con_id: int | None) -> None:
+                    if not con_id:
+                        return
+                    req_id = pnl_req_by_con.pop(con_id, None)
+                    if req_id is None:
+                        return
+                    con_by_req.pop(req_id, None)
+                    try:
+                        ib.cancelPnLSingle(req_id)
+                    except Exception:
+                        return
+
+                def archive_position(row: sqlite3.Row) -> None:
+                    open_time = row["open_time"]
+                    close_time = _get_last_trade_time(
+                        conn, account_id, row["symbol"], row["currency"]
+                    ) or _utc_now()
+                    realized = _sum_realized(
+                        conn, account_id, row["symbol"], row["currency"], open_time, close_time
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO positions_history
+                            (id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost,
+                             realized_pnl, open_time, close_time, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["id"],
+                            row["account_id"],
+                            row["symbol"],
+                            row["exchange"],
+                            row["currency"],
+                            row["qty"],
+                            row["avg_cost"],
+                            row["total_cost"],
+                            realized,
+                            row["open_time"],
+                            close_time,
+                            _utc_now(),
+                        ),
+                    )
+                    conn.execute("DELETE FROM positions WHERE id = ?", (row["id"],))
+                    conn.commit()
+                    unsubscribe_pnl(row["con_id"])
+                    mark_update()
 
                 def on_position(*args):
                     if len(args) == 1 and isinstance(args[0], Position):
@@ -111,89 +559,192 @@ class IBKRSyncManager:
                         return
                     if account_code != account:
                         return
+                    symbol = contract.symbol
+                    exchange = contract.exchange or ""
+                    currency = contract.currency
+                    qty = float(position)
+                    avg_cost_value = float(avg_cost or 0.0)
+                    if qty == 0.0:
+                        row = conn.execute(
+                            """
+                            SELECT *
+                            FROM positions
+                            WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+                            """,
+                            (account_id, symbol, exchange, currency),
+                        ).fetchone()
+                        if row:
+                            archive_position(row)
+                        return
+
+                    row = conn.execute(
+                        """
+                        SELECT id, open_time
+                        FROM positions
+                        WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+                        """,
+                        (account_id, symbol, exchange, currency),
+                    ).fetchone()
+                    open_time = row["open_time"] if row and row["open_time"] else None
+                    if not open_time:
+                        last_close = _get_last_close_time(conn, account_id, symbol, currency)
+                        open_time = _get_first_trade_time(
+                            conn, account_id, symbol, currency, after_time=last_close
+                        ) or _utc_now()
                     conn.execute(
                         """
-                        INSERT INTO positions (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO positions
+                            (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl,
+                             unrealized_pnl, con_id, open_time, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(account_id, symbol, exchange, currency) DO UPDATE
                         SET qty = excluded.qty,
                             avg_cost = excluded.avg_cost,
                             total_cost = excluded.total_cost,
+                            con_id = excluded.con_id,
                             open_time = COALESCE(positions.open_time, excluded.open_time),
                             updated_at = excluded.updated_at
                         """,
                         (
                             account_id,
-                            contract.symbol,
-                            contract.exchange or "",
-                            contract.currency,
-                            float(position),
-                            float(avg_cost),
-                            float(position) * float(avg_cost),
+                            symbol,
+                            exchange,
+                            currency,
+                            qty,
+                            avg_cost_value,
+                            qty * avg_cost_value,
                             0.0,
-                            _bj_now(),
+                            0.0,
+                            contract.conId,
+                            open_time,
                             _utc_now(),
                         ),
                     )
                     conn.commit()
-                    if contract.conId not in contracts:
-                        contracts[contract.conId] = contract
-                        ib.reqMktData(contract, "", False, False)
+                    subscribe_pnl(contract.conId)
+                    mark_update()
 
-                    if contract.currency != self.settings.base_currency:
-                        pair = f"{contract.currency}{self.settings.base_currency}"
-                        if pair not in fx_contracts:
-                            fx_contract = Forex(pair)
-                            fx_contracts[pair] = fx_contract
-                            ib.reqMktData(fx_contract, "", False, False)
+                def request_positions() -> None:
+                    try:
+                        positions = ib.reqPositions()
+                    except Exception:
+                        return
+                    seen: set[tuple[str, str, str]] = set()
+                    for pos in positions:
+                        if pos.account != account:
+                            continue
+                        on_position(pos)
+                        seen.add((pos.contract.symbol, pos.contract.exchange or "", pos.contract.currency))
+                    rows = conn.execute(
+                        "SELECT * FROM positions WHERE account_id = ?",
+                        (account_id,),
+                    ).fetchall()
+                    for row in rows:
+                        key = (row["symbol"], row["exchange"], row["currency"])
+                        if key in seen:
+                            continue
+                        archive_position(row)
 
-                def on_tickers(tickers):
-                    for ticker in tickers:
-                        contract = ticker.contract
-                        if isinstance(contract, Forex):
-                            base = contract.pair[:3]
-                            quote = contract.pair[3:]
-                            conn.execute(
-                                """
-                                INSERT INTO fx_rates (from_ccy, to_ccy, rate, update_time)
-                                VALUES (?, ?, ?, ?)
-                                ON CONFLICT(from_ccy, to_ccy) DO UPDATE
-                                SET rate = excluded.rate,
-                                    update_time = excluded.update_time
-                                """,
-                                (base, quote, ticker.marketPrice(), _utc_now()),
+                def request_executions() -> None:
+                    try:
+                        fills = ib.reqExecutions()
+                        for fill in fills:
+                            on_exec(fill)
+                    except Exception:
+                        return
+
+                def process_order(job: OrderJob) -> None:
+                    payload = job.payload
+                    try:
+                        contract = Stock(
+                            payload.symbol.strip().upper(),
+                            payload.exchange or "SMART",
+                            payload.currency or self.settings.base_currency,
+                        )
+                        qualified = ib.qualifyContracts(contract)
+                        if not qualified:
+                            set_order_result(
+                                job.request_id,
+                                OrderResult(success=False, error="Unable to qualify contract"),
                             )
-                            conn.commit()
+                            return
+                        action = "BUY" if payload.side.lower() == "buy" else "SELL"
+                        qty = float(payload.qty)
+                        if payload.order_type.upper() in {"MKT", "MARKET"}:
+                            order = MarketOrder(action, qty)
                         else:
-                            conn.execute(
-                                """
-                                INSERT INTO prices (symbol, exchange, currency, last, bid, ask, update_time)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ON CONFLICT(symbol, exchange, currency) DO UPDATE
-                                SET last = excluded.last,
-                                    bid = excluded.bid,
-                                    ask = excluded.ask,
-                                    update_time = excluded.update_time
-                                """,
-                                (
-                                    contract.symbol,
-                                    contract.exchange or "",
-                                    contract.currency,
-                                    ticker.last,
-                                    ticker.bid,
-                                    ticker.ask,
-                                    _utc_now(),
-                                ),
-                            )
-                            conn.commit()
-                    self._status.last_update = _utc_now()
+                            if payload.price is None:
+                                set_order_result(
+                                    job.request_id,
+                                    OrderResult(success=False, error="Limit price required"),
+                                )
+                                return
+                            order = LimitOrder(action, qty, float(payload.price))
+                        if payload.tif:
+                            order.tif = payload.tif
+                        if payload.account:
+                            order.account = payload.account
+                        trade = ib.placeOrder(contract, order)
+                        ib.sleep(1)
+                        status = trade.orderStatus
+                        set_order_result(
+                            job.request_id,
+                            OrderResult(
+                                success=True,
+                                result={
+                                    "order_id": trade.order.orderId,
+                                    "status": status.status,
+                                    "filled": status.filled,
+                                    "remaining": status.remaining,
+                                    "avg_fill_price": status.avgFillPrice,
+                                    "request_id": job.request_id,
+                                },
+                                request_id=job.request_id,
+                            ),
+                        )
+                    except Exception as exc:
+                        set_order_result(
+                            job.request_id,
+                            OrderResult(success=False, error=str(exc), request_id=job.request_id),
+                        )
+
+                def on_pnl_single(*args) -> None:
+                    con_id = None
+                    unrealized = None
+                    if len(args) == 1:
+                        pnl = args[0]
+                        con_id = getattr(pnl, "conId", None)
+                        unrealized = getattr(pnl, "unrealizedPnL", None)
+                    elif len(args) >= 4:
+                        req_id = args[0]
+                        unrealized = args[3]
+                        con_id = con_by_req.get(req_id)
+                    if con_id is None or unrealized is None:
+                        return
+                    try:
+                        unrealized_value = float(unrealized)
+                    except (TypeError, ValueError):
+                        return
+                    if not math.isfinite(unrealized_value):
+                        return
+                    conn.execute(
+                        """
+                        UPDATE positions
+                        SET unrealized_pnl = ?, updated_at = ?
+                        WHERE account_id = ? AND con_id = ?
+                        """,
+                        (unrealized_value, _utc_now(), account_id, con_id),
+                    )
+                    conn.commit()
+                    mark_update()
 
                 ib.execDetailsEvent += on_exec
+                ib.commissionReportEvent += on_commission
                 ib.positionEvent += on_position
-                ib.pendingTickersEvent += on_tickers
+                ib.pnlSingleEvent += on_pnl_single
 
-                ib.reqPositions()
-                ib.reqExecutions()
+                request_positions()
+                request_executions()
 
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
@@ -203,6 +754,13 @@ class IBKRSyncManager:
                     if time.time() - last_keepalive >= self.settings.ib_keepalive_seconds:
                         ib.reqCurrentTime()
                         last_keepalive = time.time()
+                    while True:
+                        try:
+                            job = self._order_queue.get_nowait()
+                        except Empty:
+                            break
+                        process_order(job)
+                        self._order_queue.task_done()
 
                 if not self._stop_event.is_set():
                     self._status.connected = False
@@ -220,6 +778,17 @@ class IBKRSyncManager:
                     ib.disconnect()
                 except Exception:
                     pass
+                with self._order_lock:
+                    pending_ids = list(self._order_waiters.keys())
+                for request_id in pending_ids:
+                    set_order_result(
+                        request_id,
+                        OrderResult(
+                            success=False,
+                            error="IB Gateway disconnected",
+                            request_id=request_id,
+                        ),
+                    )
 
             if self._stop_event.is_set():
                 break
@@ -233,7 +802,7 @@ class IBKRSyncManager:
 def seed_demo_data(settings: Settings) -> None:
     conn = get_connection(settings.db_path)
     account_id = upsert_account(conn, "DEMO", settings.base_currency)
-    now = dt.datetime.utcnow()
+    now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
 
     trades = [
         ("buy", 10, 410.0, 1.0, now.isoformat(), "demo-1"),
@@ -242,27 +811,26 @@ def seed_demo_data(settings: Settings) -> None:
     ]
 
     for side, qty, price, commission, trade_time, exec_id in trades:
-        apply_trade(
-            conn,
-            account_id,
-            "MSFT",
-            "NASDAQ",
-            "USD",
-            side,
-            qty,
-            price,
-            commission,
-            trade_time,
-            exec_id,
+        conn.execute(
+            """
+            INSERT INTO trades
+                (account_id, symbol, exchange, currency, side, qty, price, commission, realized_pnl,
+                 trade_time, ibkr_exec_id, perm_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                "MSFT",
+                "NASDAQ",
+                "USD",
+                side,
+                qty,
+                price,
+                commission,
+                0.0,
+                trade_time,
+                exec_id,
+                None,
+            ),
         )
-
-    conn.execute(
-        """
-        INSERT INTO prices (symbol, exchange, currency, last, bid, ask, update_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(symbol, exchange, currency) DO UPDATE
-        SET last = excluded.last, update_time = excluded.update_time
-        """,
-        ("MSFT", "NASDAQ", "USD", 425.0, 424.5, 425.5, _utc_now()),
-    )
     conn.commit()

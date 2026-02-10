@@ -22,4 +22,7 @@ kubectl apply -f k8s/frontend.yaml
 Write-Host "Restarting ib-gateway (new images)..."
 kubectl rollout restart deploy/ib-gateway -n ibkr
 
+Write-Host "Restarting frontend (new images)..."
+kubectl rollout restart deploy/ibkr-frontend -n ibkr
+
 Write-Host "Done."

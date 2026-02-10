@@ -18,6 +18,13 @@ const formatDate = (value) => {
   return value.split("T")[0] ?? value;
 };
 
+const buildIdempotencyKey = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
 function App() {
   const [summary, setSummary] = useState(null);
   const [positions, setPositions] = useState([]);
@@ -33,6 +40,14 @@ function App() {
   const [expanded, setExpanded] = useState(new Set());
   const [tradesByPosition, setTradesByPosition] = useState({});
   const [activeView, setActiveView] = useState("current");
+  const [orderForm, setOrderForm] = useState({
+    symbol: "",
+    qty: 1,
+    side: "buy",
+    order_type: "MKT",
+    price: ""
+  });
+  const [orderStatus, setOrderStatus] = useState(null);
 
   const baseCurrency = summary?.base_currency ?? "USD";
   const money = useMemo(() => currencyFormatter(baseCurrency), [baseCurrency]);
@@ -137,6 +152,47 @@ function App() {
     }
   };
 
+  const submitOrder = async (event) => {
+    event.preventDefault();
+    setOrderStatus({ state: "pending", message: "Placing order..." });
+    try {
+      const idempotencyKey = buildIdempotencyKey();
+      const payload = {
+        symbol: orderForm.symbol.trim(),
+        qty: Number(orderForm.qty),
+        side: orderForm.side,
+        order_type: orderForm.order_type
+      };
+      if (orderForm.order_type === "LMT") {
+        payload.price = Number(orderForm.price);
+      }
+      const response = await fetch(`${API_BASE}/orders`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(errorPayload?.detail || "Order failed");
+      }
+      const result = await response.json();
+      const message =
+        result.status === "queued"
+          ? "Order queued"
+          : `Order ${result.order_id} ${result.status}`;
+      setOrderStatus({
+        state: "success",
+        message
+      });
+    } catch (error) {
+      setOrderStatus({ state: "error", message: error.message || "Order failed" });
+    }
+    window.setTimeout(() => setOrderStatus(null), 5000);
+  };
+
   const ibkrStatusClass = ibStatus.connected
     ? "live"
     : ibStatus.error
@@ -149,15 +205,15 @@ function App() {
       return <div className="trade-empty">No trades yet.</div>;
     }
     return (
-      <div className="trade-table">
-        <div className="trade-row header">
-          <span>Time</span>
-          <span>Side</span>
-          <span>Qty</span>
-          <span>Price</span>
-          <span>Fee</span>
-          <span>Realized</span>
-        </div>
+        <div className="trade-table">
+          <div className="trade-row header">
+            <span>Time</span>
+            <span>Side</span>
+            <span>Qty</span>
+            <span>Price</span>
+            <span>Fee</span>
+            <span>Realized</span>
+          </div>
         {trades.map((trade, index) => (
           <div className="trade-row" key={`${trade.trade_time}-${index}`}>
             <span>{trade.trade_time}</span>
@@ -174,16 +230,12 @@ function App() {
     );
   };
 
-  const renderPositionRow = (pos, isHistory) => (
-    <div className="position-block" key={`${pos.id}-${isHistory ? "history" : "current"}`}>
-      <div className="row">
-        <span className="symbol">
-          {pos.symbol}
-          <small>{pos.exchange ?? ""}</small>
-        </span>
+  const renderCurrentRow = (pos) => (
+    <div className="position-block" key={`${pos.id}-current`}>
+      <div className="row current">
+        <span className="symbol">{pos.symbol}</span>
         <span>{numberFormatter.format(pos.qty)}</span>
         <span>{money.format(pos.avg_cost)}</span>
-        <span>{pos.market_price ? money.format(pos.market_price) : "--"}</span>
         <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
           {money.format(pos.realized_pnl)}
         </span>
@@ -195,7 +247,27 @@ function App() {
         </span>
         <span className="time">
           <div>{formatDate(pos.open_time)}</div>
-          {isHistory && <div>Close: {formatDate(pos.close_time)}</div>}
+        </span>
+        <button className="toggle" onClick={() => toggleExpanded(pos.id)}>
+          {expanded.has(pos.id) ? "Hide Trades" : "Show Trades"}
+        </button>
+      </div>
+      {expanded.has(pos.id) && (
+        <div className="trade-panel">{renderTrades(pos.id)}</div>
+      )}
+    </div>
+  );
+
+  const renderHistoryRow = (pos) => (
+    <div className="position-block" key={`${pos.id}-history`}>
+      <div className="row history">
+        <span className="symbol">{pos.symbol}</span>
+        <span className="time">
+          <div>Open: {formatDate(pos.open_time)}</div>
+          <div>Close: {formatDate(pos.close_time)}</div>
+        </span>
+        <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
+          {money.format(pos.realized_pnl)}
         </span>
         <button className="toggle" onClick={() => toggleExpanded(pos.id)}>
           {expanded.has(pos.id) ? "Hide Trades" : "Show Trades"}
@@ -251,12 +323,12 @@ function App() {
           <div>
             <p className="eyebrow">IBKR Portfolio Console</p>
             <h1>
-              Real-time PnL, unified.
+              IBKR-first PnL, unified.
               <span>Positions, realized, unrealized, total.</span>
             </h1>
             <p className="subtitle">
-              Average cost basis with fee-aware accounting. Live prices and FX
-              conversion keep the view aligned with what you can liquidate today.
+              Trades, positions, and PnL are displayed directly from IBKR push
+              data with minimal local transformation.
             </p>
           </div>
           <div className="summary">
@@ -329,6 +401,94 @@ function App() {
           </div>
         </header>
 
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Place Order</h2>
+            <span className="tag">IBKR</span>
+          </div>
+          <form className="order-form" onSubmit={submitOrder}>
+            <label>
+              Symbol
+              <input
+                type="text"
+                placeholder="AAPL"
+                value={orderForm.symbol}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, symbol: event.target.value }))
+                }
+                required
+              />
+            </label>
+            <label>
+              Side
+              <select
+                value={orderForm.side}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, side: event.target.value }))
+                }
+              >
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+            </label>
+            <label>
+              Qty
+              <input
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                value={orderForm.qty}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, qty: event.target.value }))
+                }
+                required
+              />
+            </label>
+            <label>
+              Order Type
+              <select
+                value={orderForm.order_type}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, order_type: event.target.value }))
+                }
+              >
+                <option value="MKT">Market</option>
+                <option value="LMT">Limit</option>
+              </select>
+            </label>
+            <label className={orderForm.order_type === "LMT" ? "" : "disabled"}>
+              Limit Price
+              <input
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                value={orderForm.price}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, price: event.target.value }))
+                }
+                disabled={orderForm.order_type !== "LMT"}
+                required={orderForm.order_type === "LMT"}
+              />
+            </label>
+            <button className="btn primary" type="submit">
+              Submit
+            </button>
+            {orderStatus && (
+              <span
+                className={`status ${
+                  orderStatus.state === "success"
+                    ? "live"
+                    : orderStatus.state === "pending"
+                    ? "warning"
+                    : "error"
+                }`}
+              >
+                {orderStatus.message}
+              </span>
+            )}
+          </form>
+        </section>
+
         {activeView === "current" && (
           <section className="panel">
             <div className="panel-header">
@@ -336,11 +496,10 @@ function App() {
               <span className="tag">Base: {baseCurrency}</span>
             </div>
             <div className="table">
-              <div className="row header">
+              <div className="row header current">
                 <span>Symbol</span>
                 <span>Qty</span>
                 <span>Avg Cost</span>
-                <span>Market</span>
                 <span>Realized</span>
                 <span>Unrealized</span>
                 <span>Total</span>
@@ -350,7 +509,7 @@ function App() {
               {positions.length === 0 && (
                 <div className="row empty">No positions yet.</div>
               )}
-              {positions.map((pos) => renderPositionRow(pos, false))}
+              {positions.map((pos) => renderCurrentRow(pos))}
             </div>
           </section>
         )}
@@ -362,21 +521,16 @@ function App() {
               <span className="tag">Closed</span>
             </div>
             <div className="table">
-              <div className="row header">
+              <div className="row header history">
                 <span>Symbol</span>
-                <span>Qty</span>
-                <span>Avg Cost</span>
-                <span>Market</span>
-                <span>Realized</span>
-                <span>Unrealized</span>
-                <span>Total</span>
                 <span>Time</span>
+                <span>Realized</span>
                 <span></span>
               </div>
               {historyPositions.length === 0 && (
                 <div className="row empty">No history yet.</div>
               )}
-              {historyPositions.map((pos) => renderPositionRow(pos, true))}
+              {historyPositions.map((pos) => renderHistoryRow(pos))}
             </div>
           </section>
         )}

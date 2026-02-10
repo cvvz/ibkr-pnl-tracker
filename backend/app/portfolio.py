@@ -37,6 +37,40 @@ def _realized_for_close(avg_cost: float, price: float, close_qty: float, directi
     return (avg_cost - price) * close_qty
 
 
+def _select_position(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    exchange: str,
+    currency: str,
+) -> sqlite3.Row | None:
+    exchange = exchange or ""
+    row = conn.execute(
+        """
+        SELECT id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time
+        FROM positions
+        WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+        """,
+        (account_id, symbol, exchange, currency),
+    ).fetchone()
+    if row:
+        return row
+    rows = conn.execute(
+        """
+        SELECT id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time
+        FROM positions
+        WHERE account_id = ? AND symbol = ? AND currency = ?
+        """,
+        (account_id, symbol, currency),
+    ).fetchall()
+    if not rows:
+        return None
+    for candidate in rows:
+        if candidate["exchange"]:
+            return candidate
+    return rows[0]
+
+
 def _insert_trade(
     conn: sqlite3.Connection,
     account_id: int,
@@ -51,11 +85,26 @@ def _insert_trade(
     realized_pnl: float,
     trade_time: str,
     ibkr_exec_id: str | None,
+    perm_id: int | None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO trades (account_id, position_id, symbol, exchange, currency, side, qty, price, commission, realized_pnl, trade_time, ibkr_exec_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO trades (
+            account_id,
+            position_id,
+            symbol,
+            exchange,
+            currency,
+            side,
+            qty,
+            price,
+            commission,
+            realized_pnl,
+            trade_time,
+            ibkr_exec_id,
+            perm_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
@@ -70,6 +119,7 @@ def _insert_trade(
             realized_pnl,
             trade_time,
             ibkr_exec_id,
+            perm_id,
         ),
     )
 
@@ -116,6 +166,7 @@ def apply_trade(
     commission: float,
     trade_time: str,
     ibkr_exec_id: str | None,
+    perm_id: int | None = None,
 ) -> Dict:
     normalized_side = side.lower()
     if normalized_side not in {"buy", "sell"}:
@@ -128,208 +179,20 @@ def apply_trade(
     trade_qty_signed = qty if normalized_side == "buy" else -qty
     trade_time_bj = _to_beijing(trade_time)
 
-    row = conn.execute(
-        """
-        SELECT id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time
-        FROM positions
-        WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
-        """,
-        (account_id, symbol, exchange, currency),
-    ).fetchone()
-
-    if row is None:
-        open_time = trade_time_bj
-        total_cost = trade_qty_signed * price + commission
-        avg_cost = total_cost / trade_qty_signed if trade_qty_signed else 0.0
-        conn.execute(
-            """
-            INSERT INTO positions (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                account_id,
-                symbol,
-                exchange,
-                currency,
-                trade_qty_signed,
-                avg_cost,
-                total_cost,
-                0.0,
-                open_time,
-                _utc_now(),
-            ),
-        )
-        position_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-        _insert_trade(
-            conn,
-            account_id,
-            position_id,
-            symbol,
-            exchange,
-            currency,
-            normalized_side,
-            qty,
-            price,
-            commission,
-            0.0,
-            trade_time_bj,
-            ibkr_exec_id,
-        )
-        conn.commit()
-        return {
-            "symbol": symbol,
-            "exchange": exchange,
-            "currency": currency,
-            "qty": trade_qty_signed,
-            "avg_cost": avg_cost,
-            "total_cost": total_cost,
-            "realized_trade": 0.0,
-            "realized_total": 0.0,
-        }
-
-    pos_qty = float(row["qty"])
-    avg_cost = float(row["avg_cost"])
-    realized_pnl = float(row["realized_pnl"])
-    position_id = int(row["id"])
+    row = _select_position(conn, account_id, symbol, exchange, currency)
+    position_id = int(row["id"]) if row else None
+    pos_qty = float(row["qty"]) if row else 0.0
+    avg_cost = float(row["avg_cost"]) if row else price
     direction = _position_direction(pos_qty)
+    trade_direction = _position_direction(trade_qty_signed)
 
-    if direction == 0 or direction == _position_direction(trade_qty_signed):
-        total_cost = float(row["total_cost"]) + trade_qty_signed * price + commission
-        pos_qty += trade_qty_signed
-        avg_cost = total_cost / pos_qty if pos_qty else 0.0
-        conn.execute(
-            """
-            UPDATE positions
-            SET qty = ?, avg_cost = ?, total_cost = ?, realized_pnl = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (pos_qty, avg_cost, total_cost, realized_pnl, _utc_now(), position_id),
-        )
-        _insert_trade(
-            conn,
-            account_id,
-            position_id,
-            symbol,
-            exchange,
-            currency,
-            normalized_side,
-            qty,
-            price,
-            commission,
-            0.0,
-            trade_time_bj,
-            ibkr_exec_id,
-        )
-        conn.commit()
-        return {
-            "symbol": symbol,
-            "exchange": exchange,
-            "currency": currency,
-            "qty": pos_qty,
-            "avg_cost": avg_cost,
-            "total_cost": total_cost,
-            "realized_trade": 0.0,
-            "realized_total": realized_pnl,
-        }
+    if row and direction != 0 and trade_direction != 0 and direction != trade_direction:
+        close_qty = min(abs(trade_qty_signed), abs(pos_qty))
+        realized_close = _realized_for_close(avg_cost, price, close_qty, direction)
+        realized_trade = realized_close - commission
+    else:
+        realized_trade = -commission
 
-    close_qty = min(abs(trade_qty_signed), abs(pos_qty))
-    close_ratio = close_qty / abs(trade_qty_signed)
-    commission_close = commission * close_ratio
-    commission_open = commission - commission_close
-
-    realized_close = _realized_for_close(avg_cost, price, close_qty, direction)
-    realized_trade = realized_close - commission_close
-    realized_pnl += realized_trade
-
-    remaining_qty = pos_qty + trade_qty_signed
-
-    if remaining_qty == 0:
-        conn.execute(
-            """
-            UPDATE positions
-            SET qty = ?, realized_pnl = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (pos_qty, realized_pnl, _utc_now(), position_id),
-        )
-        _insert_trade(
-            conn,
-            account_id,
-            position_id,
-            symbol,
-            exchange,
-            currency,
-            normalized_side,
-            close_qty,
-            price,
-            commission_close,
-            realized_trade,
-            trade_time_bj,
-            ibkr_exec_id,
-        )
-        position_row = conn.execute(
-            "SELECT * FROM positions WHERE id = ?",
-            (position_id,),
-        ).fetchone()
-        _archive_position(conn, position_row, trade_time_bj)
-        conn.commit()
-        return {
-            "symbol": symbol,
-            "exchange": exchange,
-            "currency": currency,
-            "qty": 0.0,
-            "avg_cost": avg_cost,
-            "total_cost": avg_cost * pos_qty,
-            "realized_trade": realized_trade,
-            "realized_total": realized_pnl,
-        }
-
-    if _position_direction(remaining_qty) == direction:
-        total_cost = avg_cost * remaining_qty
-        conn.execute(
-            """
-            UPDATE positions
-            SET qty = ?, avg_cost = ?, total_cost = ?, realized_pnl = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (remaining_qty, avg_cost, total_cost, realized_pnl, _utc_now(), position_id),
-        )
-        _insert_trade(
-            conn,
-            account_id,
-            position_id,
-            symbol,
-            exchange,
-            currency,
-            normalized_side,
-            close_qty,
-            price,
-            commission_close,
-            realized_trade,
-            trade_time_bj,
-            ibkr_exec_id,
-        )
-        conn.commit()
-        return {
-            "symbol": symbol,
-            "exchange": exchange,
-            "currency": currency,
-            "qty": remaining_qty,
-            "avg_cost": avg_cost,
-            "total_cost": total_cost,
-            "realized_trade": realized_trade,
-            "realized_total": realized_pnl,
-        }
-
-    # Flip direction
-    conn.execute(
-        """
-        UPDATE positions
-        SET qty = ?, realized_pnl = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (pos_qty, realized_pnl, _utc_now(), position_id),
-    )
     _insert_trade(
         conn,
         account_id,
@@ -338,66 +201,31 @@ def apply_trade(
         exchange,
         currency,
         normalized_side,
-        close_qty,
+        qty,
         price,
-        commission_close,
+        commission,
         realized_trade,
         trade_time_bj,
-        f"{ibkr_exec_id}-close" if ibkr_exec_id else None,
+        ibkr_exec_id,
+        perm_id,
     )
-    position_row = conn.execute(
-        "SELECT * FROM positions WHERE id = ?",
-        (position_id,),
-    ).fetchone()
-    _archive_position(conn, position_row, trade_time_bj)
-
-    open_qty = remaining_qty
-    open_total_cost = open_qty * price + commission_open
-    open_avg_cost = open_total_cost / open_qty if open_qty else 0.0
-    conn.execute(
-        """
-        INSERT INTO positions (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            account_id,
-            symbol,
-            exchange,
-            currency,
-            open_qty,
-            open_avg_cost,
-            open_total_cost,
-            0.0,
-            trade_time_bj,
-            _utc_now(),
-        ),
-    )
-    new_position_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-    _insert_trade(
-        conn,
-        account_id,
-        new_position_id,
-        symbol,
-        exchange,
-        currency,
-        normalized_side,
-        abs(open_qty),
-        price,
-        commission_open,
-        0.0,
-        trade_time_bj,
-        f"{ibkr_exec_id}-open" if ibkr_exec_id else None,
-    )
-
+    if position_id is not None:
+        conn.execute(
+            """
+            UPDATE positions
+            SET realized_pnl = realized_pnl + ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (realized_trade, _utc_now(), position_id),
+        )
     conn.commit()
-
     return {
         "symbol": symbol,
         "exchange": exchange,
         "currency": currency,
-        "qty": open_qty,
-        "avg_cost": open_avg_cost,
-        "total_cost": open_total_cost,
+        "qty": pos_qty,
+        "avg_cost": avg_cost,
+        "total_cost": float(row["total_cost"]) if row else 0.0,
         "realized_trade": realized_trade,
-        "realized_total": realized_pnl,
+        "realized_total": float(row["realized_pnl"]) + realized_trade if row else realized_trade,
     }

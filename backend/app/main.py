@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import sqlite3
-from typing import Any, Dict, List
+import threading
+import time
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from .config import load_settings
 from .db import get_connection, init_db, upsert_account
-from .ibkr_sync import IBKRSyncManager
+from .ibkr_sync import IBKRSyncManager, OrderPayload
 from .k8s import restart_deployment
 from .pnl import get_account_summary, get_history_positions, get_positions
 
@@ -27,6 +30,31 @@ app.add_middleware(
 
 def _utc_now() -> str:
     return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
+
+
+def _format_bj(value: str) -> str:
+    if not value:
+        return value
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    bj = parsed.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    return bj.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_side_value(side: str) -> str:
+    normalized = side.strip().lower()
+    if normalized in {"bot", "buy"}:
+        return "buy"
+    if normalized in {"sld", "sell"}:
+        return "sell"
+    return normalized
 
 
 def _get_default_account(conn: sqlite3.Connection) -> Dict[str, Any] | None:
@@ -69,10 +97,25 @@ def _get_default_account(conn: sqlite3.Connection) -> Dict[str, Any] | None:
     return None
 
 
+class OrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    qty: float = Field(..., gt=0)
+    side: Literal["buy", "sell", "BUY", "SELL"]
+    order_type: Literal["MKT", "LMT", "MARKET", "LIMIT"]
+    price: Optional[float] = Field(default=None, gt=0)
+    exchange: Optional[str] = "SMART"
+    currency: Optional[str] = "USD"
+    account: Optional[str] = None
+    tif: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
 @app.on_event("startup")
 async def startup() -> None:
     init_db(settings.db_path)
     app.state.sync_manager = IBKRSyncManager(settings)
+    app.state.order_idempotency = {}
+    app.state.order_idempotency_lock = threading.Lock()
     with get_connection(settings.db_path) as conn:
         upsert_account(conn, "LOCAL", settings.base_currency)
     if settings.ib_auto_sync:
@@ -152,6 +195,74 @@ def gateway_restart() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/orders")
+def place_order(
+    payload: OrderRequest,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> Dict[str, Any]:
+    if settings.ib_readonly:
+        raise HTTPException(status_code=400, detail="IBKR_READONLY is enabled")
+    status = app.state.sync_manager.status()
+    if not status.connected:
+        raise HTTPException(status_code=400, detail="IB Gateway disconnected")
+
+    key = idempotency_key or payload.idempotency_key
+    if key:
+        with app.state.order_idempotency_lock:
+            now = time.time()
+            stale_keys = [
+                k for k, v in app.state.order_idempotency.items() if now - v["ts"] > 3600
+            ]
+            for k in stale_keys:
+                app.state.order_idempotency.pop(k, None)
+            entry = app.state.order_idempotency.get(key)
+            if entry:
+                if entry["status"] == "completed":
+                    return entry["response"]
+                return {"status": "pending", "request_id": entry["request_id"]}
+
+    payload_obj = OrderPayload(
+        symbol=payload.symbol,
+        qty=float(payload.qty),
+        side=_normalize_side_value(payload.side),
+        order_type=payload.order_type,
+        price=float(payload.price) if payload.price is not None else None,
+        exchange=payload.exchange,
+        currency=payload.currency,
+        tif=payload.tif,
+        account=payload.account,
+    )
+    request_id = None
+    if key:
+        request_id = key
+        with app.state.order_idempotency_lock:
+            app.state.order_idempotency[key] = {
+                "status": "pending",
+                "request_id": request_id,
+                "ts": time.time(),
+            }
+
+    result = app.state.sync_manager.enqueue_order(payload_obj, request_id=request_id)
+    if not result.success:
+        if key:
+            with app.state.order_idempotency_lock:
+                app.state.order_idempotency.pop(key, None)
+        raise HTTPException(status_code=400, detail=result.error or "Order failed")
+    response = result.result or {"status": "queued", "request_id": result.request_id}
+    if key:
+        with app.state.order_idempotency_lock:
+            status_value = "completed"
+            if response.get("status") == "queued":
+                status_value = "pending"
+            app.state.order_idempotency[key] = {
+                "status": status_value,
+                "request_id": response.get("request_id", request_id),
+                "response": response,
+                "ts": time.time(),
+            }
+    return response
+
+
 @app.get("/positions")
 def positions() -> List[Dict[str, Any]]:
     with get_connection(settings.db_path) as conn:
@@ -191,27 +302,62 @@ def trades() -> List[Dict[str, Any]]:
     with get_connection(settings.db_path) as conn:
         rows = conn.execute(
             """
-            SELECT symbol, exchange, currency, side, qty, price, commission, realized_pnl, trade_time
+            SELECT symbol, exchange, currency, side, qty, price, commission, realized_pnl, trade_time, perm_id
             FROM trades
             ORDER BY trade_time DESC
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+        payload = []
+        for row in rows:
+            item = dict(row)
+            item["trade_time"] = _format_bj(item.get("trade_time", ""))
+            payload.append(item)
+        return payload
 
 
 @app.get("/positions/{position_id}/trades")
 def trades_for_position(position_id: int) -> List[Dict[str, Any]]:
     with get_connection(settings.db_path) as conn:
-        rows = conn.execute(
+        row = conn.execute(
             """
-            SELECT symbol, exchange, currency, side, qty, price, commission, realized_pnl, trade_time
-            FROM trades
-            WHERE position_id = ?
-            ORDER BY trade_time ASC
+            SELECT account_id, symbol, exchange, currency, open_time, NULL AS close_time
+            FROM positions
+            WHERE id = ?
             """,
             (position_id,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                """
+                SELECT account_id, symbol, exchange, currency, open_time, close_time
+                FROM positions_history
+                WHERE id = ?
+                """,
+                (position_id,),
+            ).fetchone()
+        if not row:
+            return []
+
+        query = """
+            SELECT trade_time, side, qty, price, commission, realized_pnl
+            FROM trades
+            WHERE account_id = ? AND symbol = ? AND currency = ?
+        """
+        params: List[Any] = [row["account_id"], row["symbol"], row["currency"]]
+        if row["open_time"]:
+            query += " AND trade_time >= ?"
+            params.append(row["open_time"])
+        if row["close_time"]:
+            query += " AND trade_time <= ?"
+            params.append(row["close_time"])
+        query += " ORDER BY trade_time ASC"
+        rows = conn.execute(query, params).fetchall()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            item["trade_time"] = _format_bj(item.get("trade_time", ""))
+            payload.append(item)
+        return payload
 
 
 @app.websocket("/ws/updates")
