@@ -37,6 +37,7 @@ _ACCOUNT_SUMMARY_TAGS = {
     "GrossPositionValue": "gross_position_value",
     "ShortMarketValue": "short_market_value",
 }
+PNL_SINGLE_FLUSH_INTERVAL = 1.0
 
 
 def _trade_date_et(now: dt.datetime | None = None) -> str:
@@ -290,6 +291,8 @@ class IBKRSyncManager:
                 con_by_req: dict[int, int] = {}
                 account_pnl_req_id: int | None = None
                 account_summary_req_id: int | None = None
+                last_pnl_single: dict[int, tuple[float | None, float]] = {}
+                pending_pnl_single: dict[int, tuple[float, float | None]] = {}
 
                 def ensure_conn() -> psycopg.Connection:
                     nonlocal conn, account_id
@@ -1057,68 +1060,93 @@ class IBKRSyncManager:
                         )
 
                 def on_pnl_single(*args) -> None:
-                    span = span_start("on_pnl_single")
                     con_id = None
                     unrealized = None
                     daily = None
-                    unrealized_value = None
+                    if len(args) == 1:
+                        pnl = args[0]
+                        con_id = getattr(pnl, "conId", None)
+                        unrealized = getattr(pnl, "unrealizedPnL", None)
+                        daily = getattr(pnl, "dailyPnL", None)
+                    elif len(args) >= 4:
+                        req_id = args[0]
+                        con_id = con_by_req.get(req_id)
+                        if len(args) >= 5:
+                            daily = args[2]
+                            unrealized = args[3]
+                            if daily is None and len(args) >= 5:
+                                daily = args[4]
+                        else:
+                            daily = args[1]
+                            unrealized = args[2]
+                    if con_id is None or unrealized is None:
+                        return
+                    try:
+                        unrealized_value = float(unrealized)
+                    except (TypeError, ValueError):
+                        return
+                    if not math.isfinite(unrealized_value):
+                        return
                     daily_value = None
+                    if daily is not None:
+                        try:
+                            daily_value = float(daily)
+                        except (TypeError, ValueError):
+                            daily_value = None
+                        if daily_value is not None and not math.isfinite(daily_value):
+                            daily_value = None
+                    last_entry = last_pnl_single.get(con_id)
+                    if last_entry:
+                        last_daily, last_unrealized = last_entry
+                        if last_daily == daily_value and last_unrealized == unrealized_value:
+                            return
+                    last_pnl_single[con_id] = (daily_value, unrealized_value)
+                    pending_pnl_single[con_id] = (unrealized_value, daily_value)
+
+                def flush_pnl_single_updates() -> None:
+                    if not pending_pnl_single:
+                        return
+                    count = len(pending_pnl_single)
+                    span = span_start("flush_pnl_single", f"count={count}")
                     try:
                         ensure_conn()
-                        if len(args) == 1:
-                            pnl = args[0]
-                            con_id = getattr(pnl, "conId", None)
-                            unrealized = getattr(pnl, "unrealizedPnL", None)
-                            daily = getattr(pnl, "dailyPnL", None)
-                        elif len(args) >= 4:
-                            req_id = args[0]
-                            con_id = con_by_req.get(req_id)
-                            if len(args) >= 5:
-                                daily = args[2]
-                                unrealized = args[3]
-                                if daily is None and len(args) >= 5:
-                                    daily = args[4]
+                        now = _utc_now()
+                        updates_with_daily: list[tuple[float, float, str, int, int]] = []
+                        updates_without_daily: list[tuple[float, str, int, int]] = []
+                        for con_id, values in pending_pnl_single.items():
+                            unrealized_value, daily_value = values
+                            if daily_value is None:
+                                updates_without_daily.append(
+                                    (unrealized_value, now, account_id, con_id)
+                                )
                             else:
-                                daily = args[1]
-                                unrealized = args[2]
-                        if con_id is None or unrealized is None:
-                            return
-                        try:
-                            unrealized_value = float(unrealized)
-                        except (TypeError, ValueError):
-                            return
-                        if not math.isfinite(unrealized_value):
-                            return
-                        if daily is not None:
-                            try:
-                                daily_value = float(daily)
-                            except (TypeError, ValueError):
-                                daily_value = None
-                            if daily_value is not None and not math.isfinite(daily_value):
-                                daily_value = None
-                        if daily_value is None:
-                            conn.execute(
-                                """
-                                UPDATE positions
-                                SET unrealized_pnl = %s, updated_at = %s
-                                WHERE account_id = %s AND con_id = %s
-                                """,
-                                (unrealized_value, _utc_now(), account_id, con_id),
-                            )
-                        else:
-                            conn.execute(
-                                """
-                                UPDATE positions
-                                SET unrealized_pnl = %s, daily_pnl = %s, updated_at = %s
-                                WHERE account_id = %s AND con_id = %s
-                                """,
-                                (unrealized_value, daily_value, _utc_now(), account_id, con_id),
-                            )
+                                updates_with_daily.append(
+                                    (unrealized_value, daily_value, now, account_id, con_id)
+                                )
+                        with conn.cursor() as cur:
+                            if updates_without_daily:
+                                cur.executemany(
+                                    """
+                                    UPDATE positions
+                                    SET unrealized_pnl = %s, updated_at = %s
+                                    WHERE account_id = %s AND con_id = %s
+                                    """,
+                                    updates_without_daily,
+                                )
+                            if updates_with_daily:
+                                cur.executemany(
+                                    """
+                                    UPDATE positions
+                                    SET unrealized_pnl = %s, daily_pnl = %s, updated_at = %s
+                                    WHERE account_id = %s AND con_id = %s
+                                    """,
+                                    updates_with_daily,
+                                )
                         conn.commit()
                         mark_update()
+                        pending_pnl_single.clear()
                     finally:
-                        extra = f"con_id={con_id} daily={daily_value} unrealized={unrealized_value}".strip()
-                        span_end("on_pnl_single", span, extra)
+                        span_end("flush_pnl_single", span, f"count={count}")
 
                 ib.execDetailsEvent += on_exec
                 ib.commissionReportEvent += on_commission
@@ -1139,6 +1167,7 @@ class IBKRSyncManager:
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
                 last_queue_log = 0.0
+                last_pnl_single_flush = time.time()
 
                 logger.info("enter order loop")
                 while not self._stop_event.is_set() and ib.isConnected():
@@ -1149,6 +1178,9 @@ class IBKRSyncManager:
                     if time.time() - last_keepalive >= self.settings.ib_keepalive_seconds:
                         ib.reqCurrentTime()
                         last_keepalive = time.time()
+                    if time.time() - last_pnl_single_flush >= PNL_SINGLE_FLUSH_INTERVAL:
+                        flush_pnl_single_updates()
+                        last_pnl_single_flush = time.time()
                     now = time.time()
                     if now - last_queue_log >= 5:
                         last_queue_log = now
