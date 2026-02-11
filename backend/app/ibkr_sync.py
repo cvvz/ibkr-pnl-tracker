@@ -278,6 +278,13 @@ class IBKRSyncManager:
                 account_pnl_req_id: int | None = None
                 account_summary_req_id: int | None = None
 
+                def ensure_conn() -> psycopg.Connection:
+                    nonlocal conn, account_id
+                    if conn is None or conn.closed:
+                        conn = get_connection(self.settings.database_url)
+                        account_id = upsert_account(conn, account, self.settings.base_currency)
+                    return conn
+
                 def set_order_result(request_id: str, result: OrderResult) -> None:
                     with self._order_lock:
                         waiter = self._order_waiters.pop(request_id, None)
@@ -303,6 +310,7 @@ class IBKRSyncManager:
                     return number
 
                 def update_trade_from_report(exec_id: str, commission: float, realized: float) -> None:
+                    ensure_conn()
                     row = conn.execute(
                         "SELECT id, symbol, exchange, currency, trade_time FROM trades WHERE ibkr_exec_id = %s",
                         (exec_id,),
@@ -333,6 +341,7 @@ class IBKRSyncManager:
                 ) -> None:
                     if realized == 0.0:
                         return
+                    ensure_conn()
                     open_row = conn.execute(
                         """
                         SELECT id
@@ -388,6 +397,7 @@ class IBKRSyncManager:
                 def maybe_update_open_time(
                     symbol: str, currency: str, trade_time: str
                 ) -> None:
+                    ensure_conn()
                     row = conn.execute(
                         """
                         SELECT id, open_time
@@ -406,6 +416,7 @@ class IBKRSyncManager:
                         conn.commit()
 
                 def update_account_daily_pnl(daily_value: float) -> None:
+                    ensure_conn()
                     trade_date = _trade_date_et()
                     conn.execute(
                         """
@@ -434,12 +445,14 @@ class IBKRSyncManager:
                         cumulative += float(row["daily_pnl"])
                         updates.append((cumulative, now, int(row["id"])))
                     if updates:
-                        conn.executemany(
-                            "UPDATE account_daily_pnl SET cumulative_pnl = %s, updated_at = %s WHERE id = %s",
-                            updates,
-                        )
+                        with conn.cursor() as cur:
+                            cur.executemany(
+                                "UPDATE account_daily_pnl SET cumulative_pnl = %s, updated_at = %s WHERE id = %s",
+                                updates,
+                            )
 
                 def update_account_pnl(realized_value: float, unrealized_value: float, daily_value: float) -> None:
+                    ensure_conn()
                     total_value = realized_value + unrealized_value
                     conn.execute(
                         """
@@ -470,6 +483,7 @@ class IBKRSyncManager:
                     column = _ACCOUNT_SUMMARY_TAGS.get(tag)
                     if not column:
                         return
+                    ensure_conn()
                     conn.execute(
                         f"""
                         INSERT INTO account_summary
@@ -498,6 +512,7 @@ class IBKRSyncManager:
                     perm_id: int | None,
                 ) -> None:
                     try:
+                        ensure_conn()
                         conn.execute(
                             """
                             INSERT INTO trades
@@ -537,6 +552,7 @@ class IBKRSyncManager:
                     )
 
                 def on_exec(trade_or_fill, fill=None):
+                    ensure_conn()
                     if fill is None:
                         fill = trade_or_fill
                         contract = fill.contract
@@ -673,6 +689,7 @@ class IBKRSyncManager:
                         return
 
                 def archive_position(row: dict) -> None:
+                    ensure_conn()
                     open_time = row["open_time"]
                     close_time = _get_last_trade_time(
                         conn, account_id, row["symbol"], row["currency"]
@@ -708,6 +725,7 @@ class IBKRSyncManager:
                     mark_update()
 
                 def on_position(*args):
+                    ensure_conn()
                     if len(args) == 1 and isinstance(args[0], Position):
                         pos = args[0]
                         account_code = pos.account
@@ -787,6 +805,7 @@ class IBKRSyncManager:
                     mark_update()
 
                 def request_positions() -> None:
+                    ensure_conn()
                     try:
                         positions = ib.reqPositions()
                     except Exception:
@@ -893,6 +912,7 @@ class IBKRSyncManager:
                         )
 
                 def on_pnl_single(*args) -> None:
+                    ensure_conn()
                     con_id = None
                     unrealized = None
                     daily = None
