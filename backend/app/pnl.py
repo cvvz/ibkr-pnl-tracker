@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
-import sqlite3
 from typing import Dict, List
+
+import psycopg
 
 
 def _utc_now() -> str:
@@ -10,7 +11,7 @@ def _utc_now() -> str:
 
 
 def _sum_realized(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -20,25 +21,25 @@ def _sum_realized(
     query = """
         SELECT COALESCE(SUM(realized_pnl), 0) AS total
         FROM trades
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
     """
     params: List[object] = [account_id, symbol, currency]
     if start_time:
-        query += " AND trade_time >= ?"
+        query += " AND trade_time >= %s"
         params.append(start_time)
     if end_time:
-        query += " AND trade_time <= ?"
+        query += " AND trade_time <= %s"
         params.append(end_time)
     row = conn.execute(query, params).fetchone()
     return float(row["total"]) if row else 0.0
 
 
-def get_positions(conn: sqlite3.Connection, account_id: int, base_currency: str) -> List[Dict]:
+def get_positions(conn: psycopg.Connection, account_id: int, base_currency: str) -> List[Dict]:
     rows = conn.execute(
         """
         SELECT id, symbol, exchange, currency, qty, avg_cost, unrealized_pnl, daily_pnl, open_time
         FROM positions
-        WHERE account_id = ?
+        WHERE account_id = %s
         ORDER BY symbol
         """,
         (account_id,),
@@ -71,12 +72,12 @@ def get_positions(conn: sqlite3.Connection, account_id: int, base_currency: str)
     return positions
 
 
-def get_history_positions(conn: sqlite3.Connection, account_id: int, base_currency: str) -> List[Dict]:
+def get_history_positions(conn: psycopg.Connection, account_id: int, base_currency: str) -> List[Dict]:
     rows = conn.execute(
         """
         SELECT id, symbol, exchange, currency, open_time, close_time
         FROM positions_history
-        WHERE account_id = ?
+        WHERE account_id = %s
         ORDER BY close_time DESC
         """,
         (account_id,),
@@ -104,12 +105,12 @@ def get_history_positions(conn: sqlite3.Connection, account_id: int, base_curren
     return history
 
 
-def get_account_summary(conn: sqlite3.Connection, account_id: int, base_currency: str) -> Dict:
+def get_account_summary(conn: psycopg.Connection, account_id: int, base_currency: str) -> Dict:
     row = conn.execute(
         """
         SELECT realized_pnl, unrealized_pnl, daily_pnl, total_pnl, updated_at
         FROM account_pnl
-        WHERE account_id = ?
+        WHERE account_id = %s
         """,
         (account_id,),
     ).fetchone()
@@ -135,12 +136,12 @@ def get_account_summary(conn: sqlite3.Connection, account_id: int, base_currency
     }
 
 
-def get_account_daily_pnl(conn: sqlite3.Connection, account_id: int) -> List[Dict]:
+def get_account_daily_pnl(conn: psycopg.Connection, account_id: int) -> List[Dict]:
     rows = conn.execute(
         """
         SELECT trade_date, daily_pnl, cumulative_pnl
         FROM account_daily_pnl
-        WHERE account_id = ?
+        WHERE account_id = %s
         ORDER BY trade_date
         """,
         (account_id,),
@@ -155,12 +156,12 @@ def get_account_daily_pnl(conn: sqlite3.Connection, account_id: int) -> List[Dic
     ]
 
 
-def get_trade_cumulative(conn: sqlite3.Connection, account_id: int) -> List[Dict]:
+def get_trade_cumulative(conn: psycopg.Connection, account_id: int) -> List[Dict]:
     rows = conn.execute(
         """
         SELECT trade_date, daily_pnl
         FROM account_daily_pnl
-        WHERE account_id = ?
+        WHERE account_id = %s
         ORDER BY trade_date
         """,
         (account_id,),
@@ -182,13 +183,13 @@ def get_trade_cumulative(conn: sqlite3.Connection, account_id: int) -> List[Dict
     return series
 
 
-def get_account_snapshot(conn: sqlite3.Connection, account_id: int, base_currency: str) -> Dict:
+def get_account_snapshot(conn: psycopg.Connection, account_id: int, base_currency: str) -> Dict:
     row = conn.execute(
         """
         SELECT net_liquidation, total_cash_value, available_funds, excess_liquidity,
                init_margin_req, maint_margin_req, gross_position_value, short_market_value, updated_at
         FROM account_summary
-        WHERE account_id = ?
+        WHERE account_id = %s
         """,
         (account_id,),
     ).fetchone()

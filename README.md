@@ -5,7 +5,7 @@ Local, real-time portfolio PnL tracking for IBKR using IBKR-pushed positions, ex
 ## Features
 - Live positions and PnL (realized, unrealized, total) from IBKR events
 - IBKR Gateway integration via `ib_insync`
-- SQLite storage for trades and position snapshots
+- PostgreSQL storage for trades and position snapshots
 - React dashboard with WebSocket updates
 
 ## Backend Setup
@@ -32,15 +32,17 @@ Run the API:
 uvicorn app.main:app --reload
 ```
 
+Note: `IBKR_DATABASE_URL` (PostgreSQL) must be set before starting the API.
+
 ### IBKR Environment Variables
 
+- `IBKR_DATABASE_URL` (required, PostgreSQL connection string)
 - `IBKR_HOST` (default `127.0.0.1`)
 - `IBKR_PORT` (default `7497`)
 - `IBKR_CLIENT_ID` (default `1`)
 - `IBKR_ORDER_CLIENT_ID` (default `IBKR_CLIENT_ID + 1`)
 - `IBKR_BASE_CURRENCY` (default `USD`)
 - `IBKR_READONLY` (default `true`)
-- `IBKR_DB_PATH` (default `backend/data/ibkr.db`)
 - `IBKR_AUTO_SYNC` (default `true`)
 - `IBKR_RECONNECT_MIN_DELAY` (default `3` seconds)
 - `IBKR_RECONNECT_MAX_DELAY` (default `60` seconds)
@@ -108,12 +110,96 @@ Set API base if needed:
 VITE_API_BASE=http://localhost:8000
 ```
 
+## 本地/局域网部署（单机）
+
+默认假设：前端、后端、IB Gateway/TWS 部署在同一台机器。
+
+### 1) IB Gateway / TWS 设置
+1. 启用 API：`Enable ActiveX and Socket Clients`
+1. Trusted IPs 填 `127.0.0.1`
+1. 端口使用默认 `4001`（IB Gateway）或 `7497`（TWS）
+
+### 1.1) IB Gateway 部署方式（本地/单机）
+推荐直接安装并运行 **IB Gateway** 客户端（更稳定、更省资源）。
+
+如需 Docker 方式，可用仓库里的镜像构建：
+```powershell
+cd ib-gateway
+docker build -t ib-gateway:local .
+docker network create ibkr-net
+docker run -d --name ib-gateway `
+  --network ibkr-net `
+  -p 4001:4001 -p 5900:5900 -p 6080:6080 `
+  ib-gateway:local
+```
+说明：端口 `4001` 为 IB Gateway API，`5900/6080` 用于 VNC/网页版登录和 2FA。  
+更多细节见 `ib-gateway/README.md`。
+
+### 2) PostgreSQL（本地）
+```powershell
+docker run -d --name ibkr-postgres --network ibkr-net `
+  -e POSTGRES_USER=ibkr -e POSTGRES_PASSWORD=ibkr -e POSTGRES_DB=ibkr `
+  -p 5432:5432 postgres:16
+```
+本地连接字符串示例：`postgresql://ibkr:ibkr@127.0.0.1:5432/ibkr`
+
+### 3) 后端（Docker）
+```powershell
+cd backend
+docker build -t ibkr-backend:local .
+docker run -d --name ibkr-backend `
+  --network ibkr-net `
+  -p 8000:8000 `
+  -e IBKR_DATABASE_URL=postgresql://ibkr:ibkr@ibkr-postgres:5432/ibkr `
+  -e IBKR_HOST=ib-gateway `
+  -e IBKR_PORT=4001 `
+  -e IBKR_READONLY=false `
+  ibkr-backend:local
+```
+如果你使用 TWS 而不是 IB Gateway，把 `IBKR_PORT` 改成 `7497`。
+
+#### 容器互联注意
+如果 **IB Gateway 在容器里**，后端容器不能用 `127.0.0.1` 连接它。推荐两种方式：
+
+- **Windows / macOS**：后端用 `IBKR_HOST=host.docker.internal`
+- **Linux / 任意平台**：创建自定义网络，后端用容器名连接
+
+示例（同一 Docker 网络）：
+```powershell
+docker network create ibkr-net
+docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ibkr-postgres --network ibkr-net `
+  -e POSTGRES_USER=ibkr -e POSTGRES_PASSWORD=ibkr -e POSTGRES_DB=ibkr `
+  -p 5432:5432 postgres:16
+docker run -d --name ibkr-backend --network ibkr-net -p 8000:8000 `
+  -e IBKR_DATABASE_URL=postgresql://ibkr:ibkr@ibkr-postgres:5432/ibkr `
+  -e IBKR_HOST=ib-gateway -e IBKR_PORT=4001 -e IBKR_READONLY=false `
+  ibkr-backend:local
+```
+
+### 4) 前端（Docker）
+本地访问：
+```powershell
+cd frontend
+docker build -t ibkr-frontend:local --build-arg VITE_API_BASE=http://127.0.0.1:8000 .
+docker run -d --name ibkr-frontend -p 8080:80 ibkr-frontend:local
+```
+
+局域网访问：
+```powershell
+cd frontend
+docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<服务器内网IP>:8000 .
+docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+```
+
+局域网其它设备访问：`http://<服务器内网IP>`
+
 ## Notes
 - The system surfaces IBKR-provided realized PnL per execution (commission report event) and sums it per position.
 - Unrealized PnL is taken from IBKR `reqPnLSingle` updates.
 
 ## TODO
-- Replace SQLite with a managed database for cross-cluster persistence.
+- Review database backup/restore strategy for cloud PostgreSQL.
 
 ## Kubernetes
 See `ibkr-pnl-tracker/k8s/README.txt` for AKS-ready manifests (frontend, backend, IB Gateway, VNC, RBAC).

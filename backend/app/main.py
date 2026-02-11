@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import sqlite3
+import psycopg
 import threading
 import time
 from typing import Any, Dict, List, Literal, Optional
@@ -64,7 +64,7 @@ def _normalize_side_value(side: str) -> str:
     return normalized
 
 
-def _get_default_account(conn: sqlite3.Connection) -> Dict[str, Any] | None:
+def _get_default_account(conn: psycopg.Connection) -> Dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT a.id, a.ibkr_account, a.base_currency
@@ -119,11 +119,11 @@ class OrderRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
-    init_db(settings.db_path)
+    init_db(settings.database_url)
     app.state.sync_manager = IBKRSyncManager(settings)
     app.state.order_idempotency = {}
     app.state.order_idempotency_lock = threading.Lock()
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         upsert_account(conn, "LOCAL", settings.base_currency)
     if settings.ib_auto_sync:
         app.state.sync_manager.start()
@@ -272,7 +272,7 @@ def place_order(
 
 @app.get("/positions")
 def positions() -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return []
@@ -281,7 +281,7 @@ def positions() -> List[Dict[str, Any]]:
 
 @app.get("/positions/history")
 def positions_history() -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return []
@@ -290,7 +290,7 @@ def positions_history() -> List[Dict[str, Any]]:
 
 @app.get("/pnl/summary")
 def pnl_summary() -> Dict[str, Any]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return {
@@ -307,7 +307,7 @@ def pnl_summary() -> Dict[str, Any]:
 
 @app.get("/pnl/daily")
 def pnl_daily() -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return []
@@ -316,7 +316,7 @@ def pnl_daily() -> List[Dict[str, Any]]:
 
 @app.get("/account/summary")
 def account_summary() -> Dict[str, Any]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return {
@@ -337,7 +337,7 @@ def account_summary() -> Dict[str, Any]:
 
 @app.get("/pnl/trade-cumulative")
 def trade_cumulative() -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return []
@@ -346,7 +346,7 @@ def trade_cumulative() -> List[Dict[str, Any]]:
 
 @app.get("/trades")
 def trades() -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         rows = conn.execute(
             """
             SELECT symbol, exchange, currency, side, qty, price, commission, realized_pnl, trade_time, perm_id
@@ -364,12 +364,12 @@ def trades() -> List[Dict[str, Any]]:
 
 @app.get("/positions/{position_id}/trades")
 def trades_for_position(position_id: int) -> List[Dict[str, Any]]:
-    with get_connection(settings.db_path) as conn:
+    with get_connection(settings.database_url) as conn:
         row = conn.execute(
             """
             SELECT account_id, symbol, exchange, currency, open_time, NULL AS close_time
             FROM positions
-            WHERE id = ?
+            WHERE id = %s
             """,
             (position_id,),
         ).fetchone()
@@ -378,7 +378,7 @@ def trades_for_position(position_id: int) -> List[Dict[str, Any]]:
                 """
                 SELECT account_id, symbol, exchange, currency, open_time, close_time
                 FROM positions_history
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (position_id,),
             ).fetchone()
@@ -388,14 +388,14 @@ def trades_for_position(position_id: int) -> List[Dict[str, Any]]:
         query = """
             SELECT trade_time, side, qty, price, commission, realized_pnl
             FROM trades
-            WHERE account_id = ? AND symbol = ? AND currency = ?
+            WHERE account_id = %s AND symbol = %s AND currency = %s
         """
         params: List[Any] = [row["account_id"], row["symbol"], row["currency"]]
         if row["open_time"]:
-            query += " AND trade_time >= ?"
+            query += " AND trade_time >= %s"
             params.append(row["open_time"])
         if row["close_time"]:
-            query += " AND trade_time <= ?"
+            query += " AND trade_time <= %s"
             params.append(row["close_time"])
         query += " ORDER BY trade_time ASC"
         rows = conn.execute(query, params).fetchall()
@@ -412,7 +412,7 @@ async def updates(ws: WebSocket) -> None:
     await ws.accept()
     try:
         while True:
-            with get_connection(settings.db_path) as conn:
+            with get_connection(settings.database_url) as conn:
                 account = _get_default_account(conn)
                 if not account:
                     payload = {

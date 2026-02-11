@@ -1,162 +1,144 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
 from typing import Any, Iterable
+
+import psycopg
+from psycopg.rows import dict_row
 
 SCHEMA_STATEMENTS: Iterable[str] = (
     """
     CREATE TABLE IF NOT EXISTS accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         ibkr_account TEXT NOT NULL UNIQUE,
         base_currency TEXT NOT NULL
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
         position_id INTEGER,
         symbol TEXT NOT NULL,
         exchange TEXT,
         currency TEXT NOT NULL,
         side TEXT NOT NULL,
-        qty REAL NOT NULL,
-        price REAL NOT NULL,
-        commission REAL NOT NULL DEFAULT 0,
-        realized_pnl REAL NOT NULL DEFAULT 0,
+        qty DOUBLE PRECISION NOT NULL,
+        price DOUBLE PRECISION NOT NULL,
+        commission DOUBLE PRECISION NOT NULL DEFAULT 0,
+        realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
         trade_time TEXT NOT NULL,
         ibkr_exec_id TEXT UNIQUE,
-        perm_id TEXT,
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        perm_id TEXT
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS positions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
         symbol TEXT NOT NULL,
         exchange TEXT,
         currency TEXT NOT NULL,
-        qty REAL NOT NULL,
-        avg_cost REAL NOT NULL,
-        total_cost REAL NOT NULL,
-        realized_pnl REAL NOT NULL DEFAULT 0,
-        unrealized_pnl REAL NOT NULL DEFAULT 0,
+        qty DOUBLE PRECISION NOT NULL,
+        avg_cost DOUBLE PRECISION NOT NULL,
+        total_cost DOUBLE PRECISION NOT NULL,
+        realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        unrealized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
         con_id INTEGER,
         open_time TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(account_id, symbol, exchange, currency),
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        UNIQUE(account_id, symbol, exchange, currency)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS positions_history (
-        id INTEGER PRIMARY KEY,
-        account_id INTEGER NOT NULL,
+        id BIGINT PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
         symbol TEXT NOT NULL,
         exchange TEXT,
         currency TEXT NOT NULL,
-        qty REAL NOT NULL,
-        avg_cost REAL NOT NULL,
-        total_cost REAL NOT NULL,
-        realized_pnl REAL NOT NULL DEFAULT 0,
+        qty DOUBLE PRECISION NOT NULL,
+        avg_cost DOUBLE PRECISION NOT NULL,
+        total_cost DOUBLE PRECISION NOT NULL,
+        realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
         open_time TEXT NOT NULL,
         close_time TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        updated_at TEXT NOT NULL
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS account_pnl (
-        account_id INTEGER PRIMARY KEY,
-        realized_pnl REAL NOT NULL DEFAULT 0,
-        unrealized_pnl REAL NOT NULL DEFAULT 0,
-        daily_pnl REAL NOT NULL DEFAULT 0,
-        total_pnl REAL NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        account_id INTEGER PRIMARY KEY REFERENCES accounts(id),
+        realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        unrealized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS account_summary (
-        account_id INTEGER PRIMARY KEY,
-        net_liquidation REAL,
-        total_cash_value REAL,
-        available_funds REAL,
-        excess_liquidity REAL,
-        init_margin_req REAL,
-        maint_margin_req REAL,
-        gross_position_value REAL,
-        short_market_value REAL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        account_id INTEGER PRIMARY KEY REFERENCES accounts(id),
+        net_liquidation DOUBLE PRECISION,
+        total_cash_value DOUBLE PRECISION,
+        available_funds DOUBLE PRECISION,
+        excess_liquidity DOUBLE PRECISION,
+        init_margin_req DOUBLE PRECISION,
+        maint_margin_req DOUBLE PRECISION,
+        gross_position_value DOUBLE PRECISION,
+        short_market_value DOUBLE PRECISION,
+        updated_at TEXT NOT NULL
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS account_daily_pnl (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES accounts(id),
         trade_date TEXT NOT NULL,
-        daily_pnl REAL NOT NULL DEFAULT 0,
-        cumulative_pnl REAL NOT NULL DEFAULT 0,
+        daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        cumulative_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
-        UNIQUE(account_id, trade_date),
-        FOREIGN KEY(account_id) REFERENCES accounts(id)
+        UNIQUE(account_id, trade_date)
     )
     """,
 )
 
 
-def get_connection(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+def get_connection(database_url: str) -> psycopg.Connection:
+    return psycopg.connect(database_url, row_factory=dict_row)
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(row["name"] == column for row in rows)
-
-
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-    if not _column_exists(conn, table, column):
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-
-
-def init_db(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with get_connection(db_path) as conn:
+def init_db(database_url: str) -> None:
+    with get_connection(database_url) as conn:
         for stmt in SCHEMA_STATEMENTS:
             conn.execute(stmt)
-        _ensure_column(conn, "trades", "position_id", "position_id INTEGER")
-        _ensure_column(conn, "trades", "perm_id", "perm_id TEXT")
-        _ensure_column(conn, "positions", "open_time", "open_time TEXT")
-        _ensure_column(conn, "positions", "unrealized_pnl", "unrealized_pnl REAL NOT NULL DEFAULT 0")
-        _ensure_column(conn, "positions", "daily_pnl", "daily_pnl REAL NOT NULL DEFAULT 0")
-        _ensure_column(conn, "positions", "con_id", "con_id INTEGER")
+        conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS position_id INTEGER")
+        conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS perm_id TEXT")
+        conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS open_time TEXT")
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS unrealized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0"
+        )
+        conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS con_id INTEGER")
         conn.commit()
 
 
-def upsert_account(conn: sqlite3.Connection, account: str, base_currency: str) -> int:
+def upsert_account(conn: psycopg.Connection, account: str, base_currency: str) -> int:
     conn.execute(
         """
         INSERT INTO accounts (ibkr_account, base_currency)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         ON CONFLICT(ibkr_account) DO UPDATE SET base_currency = excluded.base_currency
         """,
         (account, base_currency),
     )
     row = conn.execute(
-        "SELECT id FROM accounts WHERE ibkr_account = ?",
+        "SELECT id FROM accounts WHERE ibkr_account = %s",
         (account,),
     ).fetchone()
     return int(row["id"])
 
 
-def execute_many(conn: sqlite3.Connection, sql: str, rows: Iterable[tuple[Any, ...]]) -> None:
+def execute_many(conn: psycopg.Connection, sql: str, rows: Iterable[tuple[Any, ...]]) -> None:
     conn.executemany(sql, rows)

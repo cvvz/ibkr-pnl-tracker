@@ -39,6 +39,11 @@ spec:
             - containerPort: 8000
               name: backend-http
           env:
+            - name: IBKR_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ibkr-postgres
+                  key: database_url
             - name: IBKR_HOST
               value: ib-gateway
             - name: IBKR_PORT

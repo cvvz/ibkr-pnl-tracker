@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import math
-import sqlite3
 import threading
 import time
 import uuid
@@ -12,6 +11,7 @@ from queue import Empty, Full, Queue
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import psycopg
 from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 
 from .config import Settings
@@ -51,7 +51,7 @@ def _normalize_side(side: str) -> str:
 
 
 def _resolve_trade_exchange(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -62,7 +62,7 @@ def _resolve_trade_exchange(
         """
         SELECT exchange
         FROM positions
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
         """,
         (account_id, symbol, currency),
     ).fetchall()
@@ -86,7 +86,7 @@ def _trade_time(value: dt.datetime | None) -> str:
 
 
 def _get_last_close_time(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -95,7 +95,7 @@ def _get_last_close_time(
         """
         SELECT MAX(close_time) AS last_close
         FROM positions_history
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
         """,
         (account_id, symbol, currency),
     ).fetchone()
@@ -103,7 +103,7 @@ def _get_last_close_time(
 
 
 def _get_first_trade_time(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -112,18 +112,18 @@ def _get_first_trade_time(
     query = """
         SELECT MIN(trade_time) AS first_trade
         FROM trades
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
     """
     params: list[object] = [account_id, symbol, currency]
     if after_time:
-        query += " AND trade_time > ?"
+        query += " AND trade_time > %s"
         params.append(after_time)
     row = conn.execute(query, params).fetchone()
     return row["first_trade"] if row and row["first_trade"] else None
 
 
 def _get_last_trade_time(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -132,7 +132,7 @@ def _get_last_trade_time(
         """
         SELECT MAX(trade_time) AS last_trade
         FROM trades
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
         """,
         (account_id, symbol, currency),
     ).fetchone()
@@ -140,7 +140,7 @@ def _get_last_trade_time(
 
 
 def _sum_realized(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     currency: str,
@@ -151,8 +151,8 @@ def _sum_realized(
         """
         SELECT COALESCE(SUM(realized_pnl), 0) AS total
         FROM trades
-        WHERE account_id = ? AND symbol = ? AND currency = ?
-          AND trade_time >= ? AND trade_time <= ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
+          AND trade_time >= %s AND trade_time <= %s
         """,
         (account_id, symbol, currency, start_time, end_time),
     ).fetchone()
@@ -256,7 +256,7 @@ class IBKRSyncManager:
 
         while not self._stop_event.is_set():
             ib = IB()
-            conn: sqlite3.Connection | None = None
+            conn: psycopg.Connection | None = None
             try:
                 ib.connect(
                     self.settings.ib_host,
@@ -268,7 +268,7 @@ class IBKRSyncManager:
                 self._status.last_connected_at = _utc_now()
                 self._status.error = None
 
-                conn = get_connection(self.settings.db_path)
+                conn = get_connection(self.settings.database_url)
                 account = ib.managedAccounts()[0] if ib.managedAccounts() else "LOCAL"
                 account_id = upsert_account(conn, account, self.settings.base_currency)
 
@@ -304,14 +304,14 @@ class IBKRSyncManager:
 
                 def update_trade_from_report(exec_id: str, commission: float, realized: float) -> None:
                     row = conn.execute(
-                        "SELECT id, symbol, exchange, currency, trade_time FROM trades WHERE ibkr_exec_id = ?",
+                        "SELECT id, symbol, exchange, currency, trade_time FROM trades WHERE ibkr_exec_id = %s",
                         (exec_id,),
                     ).fetchone()
                     if not row:
                         pending_commission_reports[exec_id] = (commission, realized)
                         return
                     conn.execute(
-                        "UPDATE trades SET commission = ?, realized_pnl = ? WHERE id = ?",
+                        "UPDATE trades SET commission = %s, realized_pnl = %s WHERE id = %s",
                         (commission, realized, row["id"]),
                     )
                     conn.commit()
@@ -337,7 +337,7 @@ class IBKRSyncManager:
                         """
                         SELECT id
                         FROM positions
-                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        WHERE account_id = %s AND symbol = %s AND currency = %s
                         """,
                         (account_id, symbol, currency),
                     ).fetchone()
@@ -347,7 +347,7 @@ class IBKRSyncManager:
                         """
                         SELECT id, open_time, close_time
                         FROM positions_history
-                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        WHERE account_id = %s AND symbol = %s AND currency = %s
                         ORDER BY close_time DESC
                         LIMIT 1
                         """,
@@ -378,8 +378,8 @@ class IBKRSyncManager:
                     conn.execute(
                         """
                         UPDATE positions_history
-                        SET close_time = ?, realized_pnl = ?, updated_at = ?
-                        WHERE id = ?
+                        SET close_time = %s, realized_pnl = %s, updated_at = %s
+                        WHERE id = %s
                         """,
                         (new_close, realized_total, _utc_now(), history_row["id"]),
                     )
@@ -392,7 +392,7 @@ class IBKRSyncManager:
                         """
                         SELECT id, open_time
                         FROM positions
-                        WHERE account_id = ? AND symbol = ? AND currency = ?
+                        WHERE account_id = %s AND symbol = %s AND currency = %s
                         """,
                         (account_id, symbol, currency),
                     ).fetchone()
@@ -400,7 +400,7 @@ class IBKRSyncManager:
                         return
                     if trade_time < row["open_time"]:
                         conn.execute(
-                            "UPDATE positions SET open_time = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE positions SET open_time = %s, updated_at = %s WHERE id = %s",
                             (trade_time, _utc_now(), row["id"]),
                         )
                         conn.commit()
@@ -411,7 +411,7 @@ class IBKRSyncManager:
                         """
                         INSERT INTO account_daily_pnl
                             (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT(account_id, trade_date) DO UPDATE
                         SET daily_pnl = excluded.daily_pnl,
                             updated_at = excluded.updated_at
@@ -422,7 +422,7 @@ class IBKRSyncManager:
                         """
                         SELECT id, daily_pnl
                         FROM account_daily_pnl
-                        WHERE account_id = ?
+                        WHERE account_id = %s
                         ORDER BY trade_date
                         """,
                         (account_id,),
@@ -435,7 +435,7 @@ class IBKRSyncManager:
                         updates.append((cumulative, now, int(row["id"])))
                     if updates:
                         conn.executemany(
-                            "UPDATE account_daily_pnl SET cumulative_pnl = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE account_daily_pnl SET cumulative_pnl = %s, updated_at = %s WHERE id = %s",
                             updates,
                         )
 
@@ -445,7 +445,7 @@ class IBKRSyncManager:
                         """
                         INSERT INTO account_pnl
                             (account_id, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT(account_id) DO UPDATE
                         SET realized_pnl = excluded.realized_pnl,
                             unrealized_pnl = excluded.unrealized_pnl,
@@ -474,7 +474,7 @@ class IBKRSyncManager:
                         f"""
                         INSERT INTO account_summary
                             (account_id, {column}, updated_at)
-                        VALUES (?, ?, ?)
+                        VALUES (%s, %s, %s)
                         ON CONFLICT(account_id) DO UPDATE
                         SET {column} = excluded.{column},
                             updated_at = excluded.updated_at
@@ -503,7 +503,7 @@ class IBKRSyncManager:
                             INSERT INTO trades
                                 (account_id, symbol, exchange, currency, side, qty, price, commission, realized_pnl,
                                  trade_time, ibkr_exec_id, perm_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 account_id,
@@ -522,7 +522,7 @@ class IBKRSyncManager:
                         )
                         conn.commit()
                         mark_update()
-                    except sqlite3.IntegrityError:
+                    except psycopg.IntegrityError:
                         return
                     if exec_id and exec_id in pending_commission_reports:
                         pending = pending_commission_reports.pop(exec_id)
@@ -672,7 +672,7 @@ class IBKRSyncManager:
                     except Exception:
                         return
 
-                def archive_position(row: sqlite3.Row) -> None:
+                def archive_position(row: dict) -> None:
                     open_time = row["open_time"]
                     close_time = _get_last_trade_time(
                         conn, account_id, row["symbol"], row["currency"]
@@ -685,7 +685,7 @@ class IBKRSyncManager:
                         INSERT INTO positions_history
                             (id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost,
                              realized_pnl, open_time, close_time, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             row["id"],
@@ -702,7 +702,7 @@ class IBKRSyncManager:
                             _utc_now(),
                         ),
                     )
-                    conn.execute("DELETE FROM positions WHERE id = ?", (row["id"],))
+                    conn.execute("DELETE FROM positions WHERE id = %s", (row["id"],))
                     conn.commit()
                     unsubscribe_pnl(row["con_id"])
                     mark_update()
@@ -730,7 +730,7 @@ class IBKRSyncManager:
                             """
                             SELECT *
                             FROM positions
-                            WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+                            WHERE account_id = %s AND symbol = %s AND exchange = %s AND currency = %s
                             """,
                             (account_id, symbol, exchange, currency),
                         ).fetchone()
@@ -742,7 +742,7 @@ class IBKRSyncManager:
                         """
                         SELECT id, open_time
                         FROM positions
-                        WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+                        WHERE account_id = %s AND symbol = %s AND exchange = %s AND currency = %s
                         """,
                         (account_id, symbol, exchange, currency),
                     ).fetchone()
@@ -757,7 +757,7 @@ class IBKRSyncManager:
                         INSERT INTO positions
                             (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl,
                              unrealized_pnl, daily_pnl, con_id, open_time, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT(account_id, symbol, exchange, currency) DO UPDATE
                         SET qty = excluded.qty,
                             avg_cost = excluded.avg_cost,
@@ -798,7 +798,7 @@ class IBKRSyncManager:
                         on_position(pos)
                         seen.add((pos.contract.symbol, pos.contract.exchange or "", pos.contract.currency))
                     rows = conn.execute(
-                        "SELECT * FROM positions WHERE account_id = ?",
+                        "SELECT * FROM positions WHERE account_id = %s",
                         (account_id,),
                     ).fetchall()
                     for row in rows:
@@ -932,8 +932,8 @@ class IBKRSyncManager:
                         conn.execute(
                             """
                             UPDATE positions
-                            SET unrealized_pnl = ?, updated_at = ?
-                            WHERE account_id = ? AND con_id = ?
+                            SET unrealized_pnl = %s, updated_at = %s
+                            WHERE account_id = %s AND con_id = %s
                             """,
                             (unrealized_value, _utc_now(), account_id, con_id),
                         )
@@ -941,8 +941,8 @@ class IBKRSyncManager:
                         conn.execute(
                             """
                             UPDATE positions
-                            SET unrealized_pnl = ?, daily_pnl = ?, updated_at = ?
-                            WHERE account_id = ? AND con_id = ?
+                            SET unrealized_pnl = %s, daily_pnl = %s, updated_at = %s
+                            WHERE account_id = %s AND con_id = %s
                             """,
                             (unrealized_value, daily_value, _utc_now(), account_id, con_id),
                         )
@@ -1015,7 +1015,7 @@ class IBKRSyncManager:
 
 
 def seed_demo_data(settings: Settings) -> None:
-    conn = get_connection(settings.db_path)
+    conn = get_connection(settings.database_url)
     account_id = upsert_account(conn, "DEMO", settings.base_currency)
     now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
 
@@ -1031,7 +1031,7 @@ def seed_demo_data(settings: Settings) -> None:
             INSERT INTO trades
                 (account_id, symbol, exchange, currency, side, qty, price, commission, realized_pnl,
                  trade_time, ibkr_exec_id, perm_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 account_id,

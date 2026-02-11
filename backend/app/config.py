@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
 class Settings:
-    db_path: Path
+    database_url: str
     base_currency: str
     ib_host: str
     ib_port: int
@@ -28,8 +27,9 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    root = Path(__file__).resolve().parents[1]
-    db_path = Path(os.getenv("IBKR_DB_PATH", root / "data" / "ibkr.db"))
+    database_url = os.getenv("IBKR_DATABASE_URL") or os.getenv("DATABASE_URL", "")
+    if not database_url:
+        raise RuntimeError("IBKR_DATABASE_URL (or DATABASE_URL) is required for Postgres")
     base_currency = os.getenv("IBKR_BASE_CURRENCY", "USD")
     ib_host = os.getenv("IBKR_HOST", "127.0.0.1")
     ib_port = int(os.getenv("IBKR_PORT", "7497"))
@@ -53,7 +53,7 @@ def load_settings() -> Settings:
     gateway_restart_file = os.getenv("IBKR_GATEWAY_RESTART_FILE", "")
 
     return Settings(
-        db_path=db_path,
+        database_url=database_url,
         base_currency=base_currency,
         ib_host=ib_host,
         ib_port=ib_port,

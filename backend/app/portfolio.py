@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
-import sqlite3
 from typing import Dict
+
+import psycopg
 
 BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
 
@@ -38,18 +39,18 @@ def _realized_for_close(avg_cost: float, price: float, close_qty: float, directi
 
 
 def _select_position(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     exchange: str,
     currency: str,
-) -> sqlite3.Row | None:
+) -> dict | None:
     exchange = exchange or ""
     row = conn.execute(
         """
         SELECT id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time
         FROM positions
-        WHERE account_id = ? AND symbol = ? AND exchange = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND exchange = %s AND currency = %s
         """,
         (account_id, symbol, exchange, currency),
     ).fetchone()
@@ -59,7 +60,7 @@ def _select_position(
         """
         SELECT id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time
         FROM positions
-        WHERE account_id = ? AND symbol = ? AND currency = ?
+        WHERE account_id = %s AND symbol = %s AND currency = %s
         """,
         (account_id, symbol, currency),
     ).fetchall()
@@ -72,7 +73,7 @@ def _select_position(
 
 
 def _insert_trade(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     position_id: int | None,
     symbol: str,
@@ -104,7 +105,7 @@ def _insert_trade(
             ibkr_exec_id,
             perm_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             account_id,
@@ -125,8 +126,8 @@ def _insert_trade(
 
 
 def _archive_position(
-    conn: sqlite3.Connection,
-    position_row: sqlite3.Row,
+    conn: psycopg.Connection,
+    position_row: dict,
     close_time: str,
 ) -> None:
     open_time = position_row["open_time"] or close_time
@@ -134,7 +135,7 @@ def _archive_position(
         """
         INSERT INTO positions_history
             (id, account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl, open_time, close_time, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             position_row["id"],
@@ -151,11 +152,11 @@ def _archive_position(
             _utc_now(),
         ),
     )
-    conn.execute("DELETE FROM positions WHERE id = ?", (position_row["id"],))
+    conn.execute("DELETE FROM positions WHERE id = %s", (position_row["id"],))
 
 
 def apply_trade(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     account_id: int,
     symbol: str,
     exchange: str | None,
@@ -213,8 +214,8 @@ def apply_trade(
         conn.execute(
             """
             UPDATE positions
-            SET realized_pnl = realized_pnl + ?, updated_at = ?
-            WHERE id = ?
+            SET realized_pnl = realized_pnl + %s, updated_at = %s
+            WHERE id = %s
             """,
             (realized_trade, _utc_now(), position_id),
         )
