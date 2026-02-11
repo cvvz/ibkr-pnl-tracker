@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import math
 import threading
 import time
@@ -16,6 +17,8 @@ from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 
 from .config import Settings
 from .db import get_connection, upsert_account
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -241,6 +244,15 @@ class IBKRSyncManager:
             with self._order_lock:
                 self._order_waiters.pop(request_id, None)
             return OrderResult(success=False, error="Order queue full", request_id=request_id)
+        logger.info(
+            "Order queued request_id=%s symbol=%s side=%s qty=%s type=%s price=%s",
+            request_id,
+            payload.symbol,
+            payload.side,
+            payload.qty,
+            payload.order_type,
+            payload.price,
+        )
         if event.wait(timeout):
             return result
         return OrderResult(
@@ -865,6 +877,15 @@ class IBKRSyncManager:
                 def process_order(job: OrderJob) -> None:
                     payload = job.payload
                     try:
+                        logger.info(
+                            "Placing order request_id=%s symbol=%s side=%s qty=%s type=%s price=%s",
+                            job.request_id,
+                            payload.symbol,
+                            payload.side,
+                            payload.qty,
+                            payload.order_type,
+                            payload.price,
+                        )
                         contract = Stock(
                             payload.symbol.strip().upper(),
                             payload.exchange or "SMART",
@@ -872,6 +893,13 @@ class IBKRSyncManager:
                         )
                         qualified = ib.qualifyContracts(contract)
                         if not qualified:
+                            logger.warning(
+                                "Order failed to qualify request_id=%s symbol=%s exchange=%s currency=%s",
+                                job.request_id,
+                                payload.symbol,
+                                payload.exchange,
+                                payload.currency,
+                            )
                             set_order_result(
                                 job.request_id,
                                 OrderResult(success=False, error="Unable to qualify contract"),
@@ -896,6 +924,15 @@ class IBKRSyncManager:
                         trade = ib.placeOrder(contract, order)
                         ib.sleep(1)
                         status = trade.orderStatus
+                        logger.info(
+                            "Order placed request_id=%s order_id=%s status=%s filled=%s remaining=%s avg_fill=%s",
+                            job.request_id,
+                            trade.order.orderId,
+                            status.status,
+                            status.filled,
+                            status.remaining,
+                            status.avgFillPrice,
+                        )
                         set_order_result(
                             job.request_id,
                             OrderResult(
@@ -912,6 +949,7 @@ class IBKRSyncManager:
                             ),
                         )
                     except Exception as exc:
+                        logger.exception("Order error request_id=%s", job.request_id)
                         set_order_result(
                             job.request_id,
                             OrderResult(success=False, error=str(exc), request_id=job.request_id),
