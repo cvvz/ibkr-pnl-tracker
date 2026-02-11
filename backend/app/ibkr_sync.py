@@ -864,7 +864,13 @@ class IBKRSyncManager:
                 def request_account_summary() -> None:
                     nonlocal account_summary_req_id
                     try:
-                        account_summary_req_id = ib.reqAccountSummary()
+                        get_req_id = getattr(ib.client, "getReqId", None)
+                        if callable(get_req_id):
+                            account_summary_req_id = get_req_id()
+                        else:
+                            account_summary_req_id = int(time.time())
+                        tags = ",".join(_ACCOUNT_SUMMARY_TAGS.keys())
+                        ib.client.reqAccountSummary(account_summary_req_id, "All", tags)
                     except Exception:
                         return
 
