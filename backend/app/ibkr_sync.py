@@ -864,14 +864,7 @@ class IBKRSyncManager:
                 def request_account_summary() -> None:
                     nonlocal account_summary_req_id
                     try:
-                        summary = ib.accountSummary()
-                    except Exception:
-                        return
-                    account_summary_req_id = None
-                    for item in summary:
-                        on_account_summary(item)
-                    try:
-                        ib.reqAccountSummary()
+                        account_summary_req_id = ib.reqAccountSummary()
                     except Exception:
                         return
 
