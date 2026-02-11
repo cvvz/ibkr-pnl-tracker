@@ -1027,17 +1027,23 @@ class IBKRSyncManager:
 
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
+                last_queue_log = 0.0
 
                 while not self._stop_event.is_set() and ib.isConnected():
                     ib.sleep(1)
                     if time.time() - last_keepalive >= self.settings.ib_keepalive_seconds:
                         ib.reqCurrentTime()
                         last_keepalive = time.time()
+                    now = time.time()
+                    if now - last_queue_log >= 5:
+                        last_queue_log = now
+                        logger.info("Order queue size=%s", self._order_queue.qsize())
                     while True:
                         try:
                             job = self._order_queue.get_nowait()
                         except Empty:
                             break
+                        logger.info("Order dequeued request_id=%s", job.request_id)
                         process_order(job)
                         self._order_queue.task_done()
 
