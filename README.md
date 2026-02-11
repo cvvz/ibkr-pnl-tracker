@@ -150,7 +150,7 @@ docker build -t ibkr-backend:local .
 docker run -d --name ibkr-backend `
   --network ibkr-net `
   -p 8000:8000 `
-  -e IBKR_DATABASE_URL=postgresql://ibkr:ibkr@ibkr-postgres:5432/ibkr `
+  -e IBKR_DATABASE_URL=postgresql://weizhi:q7410/8520@ib-pg.postgres.database.azure.com:5432/ib `
   -e IBKR_HOST=ib-gateway `
   -e IBKR_PORT=4001 `
   -e IBKR_READONLY=false `
