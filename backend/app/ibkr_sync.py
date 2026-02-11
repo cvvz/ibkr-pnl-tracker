@@ -1026,7 +1026,9 @@ class IBKRSyncManager:
                 request_executions()
                 logger.info("request_executions done")
                 request_account_pnl()
+                logger.info("request_account_pnl done")
                 request_account_summary()
+                logger.info("request_account_summary done")
 
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
