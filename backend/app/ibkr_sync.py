@@ -283,6 +283,12 @@ class IBKRSyncManager:
                     if conn is None or conn.closed:
                         conn = get_connection(self.settings.database_url)
                         account_id = upsert_account(conn, account, self.settings.base_currency)
+                    else:
+                        try:
+                            if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
+                                conn.rollback()
+                        except Exception:
+                            pass
                     return conn
 
                 def set_order_result(request_id: str, result: OrderResult) -> None:
