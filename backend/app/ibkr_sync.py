@@ -18,7 +18,7 @@ from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 from .config import Settings
 from .db import get_connection, upsert_account
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 def _utc_now() -> str:
