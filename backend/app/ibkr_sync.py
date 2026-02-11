@@ -279,6 +279,7 @@ class IBKRSyncManager:
                 self._status.connected = True
                 self._status.last_connected_at = _utc_now()
                 self._status.error = None
+                logger.info("IB connected ok")
 
                 conn = get_connection(self.settings.database_url)
                 account = ib.managedAccounts()[0] if ib.managedAccounts() else "LOCAL"
@@ -1021,7 +1022,9 @@ class IBKRSyncManager:
                 ib.pnlSingleEvent += on_pnl_single
 
                 request_positions()
+                logger.info("request_positions done")
                 request_executions()
+                logger.info("request_executions done")
                 request_account_pnl()
                 request_account_summary()
 
@@ -1029,6 +1032,7 @@ class IBKRSyncManager:
                 last_keepalive = time.time()
                 last_queue_log = 0.0
 
+                logger.info("enter order loop")
                 while not self._stop_event.is_set() and ib.isConnected():
                     ib.sleep(1)
                     if time.time() - last_keepalive >= self.settings.ib_keepalive_seconds:
