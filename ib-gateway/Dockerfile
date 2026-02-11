@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     python3 \
     python3-pip \
+    python3-redis \
     x11vnc \
     xvfb \
     fluxbox \
@@ -32,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir websockify==0.12.0 \
+RUN pip3 install --no-cache-dir --no-deps --retries 5 --timeout 30 websockify==0.12.0 \
     && curl -fsSL https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz \
     | tar -xz -C /opt \
     && mv /opt/noVNC-1.4.0 /opt/novnc

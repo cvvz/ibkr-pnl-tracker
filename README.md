@@ -125,12 +125,9 @@ VITE_API_BASE=http://localhost:8000
 如需 Docker 方式，可用仓库里的镜像构建：
 ```powershell
 cd ib-gateway
-docker build -t ib-gateway:local .
+docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
-docker run -d --name ib-gateway `
-  --network ibkr-net `
-  -p 4001:4001 -p 5900:5900 -p 6080:6080 `
-  ib-gateway:local
+docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
 ```
 说明：端口 `4001` 为 IB Gateway API，`5900/6080` 用于 VNC/网页版登录和 2FA。  
 更多细节见 `ib-gateway/README.md`。
@@ -146,14 +143,20 @@ docker run -d --name ibkr-postgres --network ibkr-net `
 ### 3) 后端（Docker）
 ```powershell
 cd backend
+# docker build -t ibkr-backend:local \
+#  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#  .
 docker build -t ibkr-backend:local .
-docker run -d --name ibkr-backend `
-  --network ibkr-net `
-  -p 8000:8000 `
-  -e IBKR_DATABASE_URL=postgresql://weizhi:q7410/8520@ib-pg.postgres.database.azure.com:5432/ib `
-  -e IBKR_HOST=ib-gateway `
-  -e IBKR_PORT=4001 `
-  -e IBKR_READONLY=false `
+
+# %2F 是 '/' 的 URL 编码
+docker run -d --name ibkr-backend \
+  --network ibkr-net \
+  --ip 172.18.0.11 \
+  -p 8000:8000 \
+  -e IBKR_DATABASE_URL=postgresql://weizhi:q7410%2F8520@ib-pg.postgres.database.azure.com:5432/ib \
+  -e IBKR_HOST=ib-gateway \
+  -e IBKR_PORT=4001 \
+  -e IBKR_READONLY=false \
   ibkr-backend:local
 ```
 如果你使用 TWS 而不是 IB Gateway，把 `IBKR_PORT` 改成 `7497`。
@@ -188,7 +191,7 @@ docker run -d --name ibkr-frontend -p 8080:80 ibkr-frontend:local
 局域网访问：
 ```powershell
 cd frontend
-docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<服务器内网IP>:8000 .
+docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://192.168.50.119:8000 .
 docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
 ```
 
@@ -206,3 +209,11 @@ See `ibkr-pnl-tracker/k8s/README.txt` for AKS-ready manifests (frontend, backend
 
 ## IB Gateway Image
 Self-build Dockerfile is available at `ibkr-pnl-tracker/ib-gateway/Dockerfile`. See `ibkr-pnl-tracker/ib-gateway/README.md` for build/run instructions.
+
+
+
+
+
+要加这两个规则，否额则无法访问 IBKR 的域名，导致无法连接 IB Gateway API。
+- DOMAIN-SUFFIX,ibllc.com, 🎯 全球直连
+- DOMAIN-SUFFIX,ibkr.com, 🎯 全球直连
