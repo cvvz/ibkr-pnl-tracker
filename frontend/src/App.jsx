@@ -283,6 +283,15 @@ function App() {
     ibStatus.vnc_url && (!gatewayConnected || ibStatus.ibkr_connected === false);
 
   const accountTotalPnl = summary?.total_pnl ?? null;
+  const sortedPositions = useMemo(() => {
+    const copy = [...positions];
+    copy.sort((a, b) => {
+      const valueA = Math.abs(Number(a.qty || 0) * Number(a.avg_cost || 0));
+      const valueB = Math.abs(Number(b.qty || 0) * Number(b.avg_cost || 0));
+      return valueB - valueA;
+    });
+    return copy;
+  }, [positions]);
 
   const dailyPnlTrendChart = useMemo(() => {
     if (!dailyPnlTrendSeries || dailyPnlTrendSeries.length === 0) {
@@ -456,6 +465,7 @@ function App() {
     const unrealizedRatio =
       costBasis > 0 ? pos.unrealized_pnl / costBasis : null;
     const totalRatio = costBasis > 0 ? pos.total_pnl / costBasis : null;
+    const positionValue = (pos.qty ?? 0) * (pos.avg_cost ?? 0);
     const trades = tradesByPosition[pos.id];
     const commissionTotal = trades
       ? trades.reduce((sum, trade) => sum + Number(trade.commission || 0), 0)
@@ -470,6 +480,7 @@ function App() {
           </span>
           <span>{numberFormatter.format(pos.qty)}</span>
           <span>{money.format(pos.avg_cost)}</span>
+          <span>{money.format(positionValue)}</span>
           <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
             {money.format(pos.daily_pnl)}
           </span>
@@ -856,6 +867,7 @@ function App() {
                 <span>Time</span>
                 <span>Qty</span>
                 <span>Avg Cost</span>
+                <span>Value</span>
                 <span>Daily</span>
                 <span>Realized</span>
                 <span>Unrealized</span>
@@ -866,7 +878,7 @@ function App() {
               {positions.length === 0 && (
                 <div className="row empty">No positions yet.</div>
               )}
-              {positions.map((pos) => renderCurrentRow(pos))}
+              {sortedPositions.map((pos) => renderCurrentRow(pos))}
             </div>
           </section>
         )}
