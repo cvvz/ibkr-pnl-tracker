@@ -42,7 +42,7 @@ IBKR PnL Tracker is a real-time trading PnL dashboard for Interactive Brokers. I
 Closed positions are listed in `Historical Positions`, showing open/close time and realized PnL. You can expand a row to see the trade list for that position.
 
 **Quick Start (Single Host, Docker)**
-Assumes frontend, backend, and IB Gateway are on the same machine. For more details, see `deployment.md`.
+Assumes frontend, backend, and IB Gateway are on the same machine. For more details, see [`Deployment.md`](./Deployment.md).
 
 1. Build and run IB Gateway:
 ```shell
@@ -88,7 +88,7 @@ docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
 - IBKR trade events must be on the same connection as order placement. Placing orders elsewhere may cause missing trade events here.
 
 **Details**
-For architecture and behavior details, see `details.md`.
+For architecture and behavior details, see [`Details.md`](./Details.md).
 
 ## 中文
 
@@ -130,7 +130,7 @@ IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它
 已平仓的持仓会显示在 `Historical Positions` 列表，包含开/平仓时间与已实现盈亏。点击展开可查看该持仓的成交明细。
 
 **快速开始（单机 Docker）**
-默认前端、后端、IB Gateway 部署在同一台机器。更详细说明见 `deployment.md`。
+默认前端、后端、IB Gateway 部署在同一台机器。更详细说明见 [`Deployment.md`](./Deployment.md)。
 
 1. 构建并启动 IB Gateway：
 ```shell
@@ -176,4 +176,4 @@ docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
 - 交易事件监听与下单必须在同一连接，否则在其他地方下单可能导致本系统收不到成交事件。
 
 **技术细节**
-如需更深入的架构与行为说明，请参考 `details.md`。
+如需更深入的架构与行为说明，请参考 [`Details.md`](./Details.md)。
