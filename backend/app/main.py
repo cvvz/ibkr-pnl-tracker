@@ -484,6 +484,6 @@ async def updates(ws: WebSocket) -> None:
                             ),
                         }
             await ws.send_json(payload)
-            await asyncio.sleep(1)
+            await asyncio.sleep(settings.ws_update_interval_seconds)
     except WebSocketDisconnect:
         return
