@@ -1137,61 +1137,70 @@ class IBKRSyncManager:
                     finally:
                         span_end("flush_pnl_single", span, f"count={count}")
 
-                def flush_account_cache() -> None:
-                    account_summary, summary_fields, daily_payload = self._cache.collect_flush_payload()
-                    if not account_summary and not daily_payload:
+                def flush_account_daily_pnl(daily_payload: dict[str, float] | None) -> None:
+                    if not daily_payload or account_id is None:
                         return
-                    span = span_start("flush_account_cache")
+                    span = span_start("flush_account_daily_pnl")
                     try:
                         ensure_conn()
                         now = _utc_now()
-                        if daily_payload and account_id is not None:
-                            conn.execute(
-                                """
-                                INSERT INTO account_daily_pnl
-                                    (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
-                                VALUES (%s, %s, %s, %s, %s)
-                                ON CONFLICT(account_id, trade_date) DO UPDATE
-                                SET daily_pnl = excluded.daily_pnl,
-                                    cumulative_pnl = excluded.cumulative_pnl,
-                                    updated_at = excluded.updated_at
-                                """,
-                                (
-                                    account_id,
-                                    daily_payload["trade_date"],
-                                    float(daily_payload["daily_pnl"]),
-                                    float(daily_payload["cumulative_pnl"]),
-                                    now,
-                                ),
-                            )
-                        if account_summary and summary_fields and account_id is not None:
-                            columns = sorted(summary_fields)
-                            placeholders = ", ".join(["%s"] * (len(columns) + 2))
-                            insert_cols = ", ".join(["account_id", *columns, "updated_at"])
-                            updates = ", ".join(
-                                [f"{column} = excluded.{column}" for column in columns]
-                                + ["updated_at = excluded.updated_at"]
-                            )
-                            values = [account_id]
-                            values.extend([account_summary.get(column) for column in columns])
-                            values.append(now)
-                            conn.execute(
-                                f"""
-                                INSERT INTO account_summary ({insert_cols})
-                                VALUES ({placeholders})
-                                ON CONFLICT(account_id) DO UPDATE
-                                SET {updates}
-                                """,
-                                values,
-                            )
-                        conn.commit()
-                        self._cache.clear_dirty(
-                            account_summary_fields=summary_fields,
-                            daily_pnl=bool(daily_payload),
+                        conn.execute(
+                            """
+                            INSERT INTO account_daily_pnl
+                                (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT(account_id, trade_date) DO UPDATE
+                            SET daily_pnl = excluded.daily_pnl,
+                                cumulative_pnl = excluded.cumulative_pnl,
+                                updated_at = excluded.updated_at
+                            """,
+                            (
+                                account_id,
+                                daily_payload["trade_date"],
+                                float(daily_payload["daily_pnl"]),
+                                float(daily_payload["cumulative_pnl"]),
+                                now,
+                            ),
                         )
+                        conn.commit()
+                        self._cache.clear_dirty(daily_pnl=True)
                         mark_update()
                     finally:
-                        span_end("flush_account_cache", span)
+                        span_end("flush_account_daily_pnl", span)
+
+                def flush_account_summary(
+                    account_summary: dict[str, float] | None, summary_fields: set[str]
+                ) -> None:
+                    if not account_summary or not summary_fields or account_id is None:
+                        return
+                    span = span_start("flush_account_summary")
+                    try:
+                        ensure_conn()
+                        now = _utc_now()
+                        columns = sorted(summary_fields)
+                        placeholders = ", ".join(["%s"] * (len(columns) + 2))
+                        insert_cols = ", ".join(["account_id", *columns, "updated_at"])
+                        updates = ", ".join(
+                            [f"{column} = excluded.{column}" for column in columns]
+                            + ["updated_at = excluded.updated_at"]
+                        )
+                        values = [account_id]
+                        values.extend([account_summary.get(column) for column in columns])
+                        values.append(now)
+                        conn.execute(
+                            f"""
+                            INSERT INTO account_summary ({insert_cols})
+                            VALUES ({placeholders})
+                            ON CONFLICT(account_id) DO UPDATE
+                            SET {updates}
+                            """,
+                            values,
+                        )
+                        conn.commit()
+                        self._cache.clear_dirty(account_summary_fields=summary_fields)
+                        mark_update()
+                    finally:
+                        span_end("flush_account_summary", span)
 
                 ib.execDetailsEvent += on_exec
                 ib.commissionReportEvent += on_commission
@@ -1225,7 +1234,11 @@ class IBKRSyncManager:
                         last_keepalive = time.time()
                     if time.time() - last_cache_flush >= self.settings.ib_cache_flush_seconds:
                         flush_pnl_single_updates()
-                        flush_account_cache()
+                        account_summary, summary_fields, daily_payload = (
+                            self._cache.collect_flush_payload()
+                        )
+                        flush_account_daily_pnl(daily_payload)
+                        flush_account_summary(account_summary, summary_fields)
                         last_cache_flush = time.time()
                     now = time.time()
                     if now - last_queue_log >= 5:
