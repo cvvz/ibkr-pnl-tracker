@@ -64,6 +64,8 @@ class CacheStore:
         self.account_summary: dict[str, Any] = {}
         self.daily_pnl_by_date: dict[str, float] = {}
         self.daily_pnl_series: list[dict[str, Any]] = []
+        self.current_trade_date: str | None = None
+        self.pending_daily_pnl_payload: dict[str, Any] | None = None
         self.exec_realized_by_id: dict[str, tuple[tuple[str, str, str], float]] = {}
         self.dirty_account_summary_fields: set[str] = set()
         self.dirty_daily_pnl = False
@@ -206,6 +208,12 @@ class CacheStore:
                 row["trade_date"]: float(row["daily_pnl"]) for row in daily_rows
             }
             self._rebuild_daily_series_locked()
+            if self.daily_pnl_by_date:
+                self.current_trade_date = max(self.daily_pnl_by_date.keys())
+            else:
+                self.current_trade_date = None
+            self.pending_daily_pnl_payload = None
+            self.dirty_daily_pnl = False
 
             self._initialized = True
 
@@ -347,9 +355,15 @@ class CacheStore:
 
     def update_daily_pnl(self, trade_date: str, daily_pnl: float) -> None:
         with self._lock:
+            previous_date = self.current_trade_date
             self.daily_pnl_by_date[trade_date] = daily_pnl
             self._rebuild_daily_series_locked()
-            self.dirty_daily_pnl = True
+            if previous_date and previous_date != trade_date:
+                payload = self._daily_payload_for_date_locked(previous_date)
+                if payload:
+                    self.pending_daily_pnl_payload = payload
+                    self.dirty_daily_pnl = True
+            self.current_trade_date = trade_date
             self._initialized = True
             self.last_update = _utc_now()
 
@@ -498,8 +512,8 @@ class CacheStore:
             summary_fields = set(self.dirty_account_summary_fields)
             account_summary = dict(self.account_summary) if summary_fields else None
             daily_payload = None
-            if self.dirty_daily_pnl:
-                daily_payload = self._current_daily_payload_locked()
+            if self.dirty_daily_pnl and self.pending_daily_pnl_payload:
+                daily_payload = dict(self.pending_daily_pnl_payload)
         return account_summary, summary_fields, daily_payload
 
     def clear_dirty(
@@ -512,6 +526,7 @@ class CacheStore:
                 self.dirty_account_summary_fields -= set(account_summary_fields)
             if daily_pnl:
                 self.dirty_daily_pnl = False
+                self.pending_daily_pnl_payload = None
 
     def _rebuild_daily_series_locked(self) -> None:
         dates = sorted(self.daily_pnl_by_date.keys())
@@ -538,3 +553,13 @@ class CacheStore:
             "daily_pnl": float(last["daily_pnl"]),
             "cumulative_pnl": float(last["cumulative_pnl"]),
         }
+
+    def _daily_payload_for_date_locked(self, trade_date: str) -> dict[str, Any] | None:
+        for entry in self.daily_pnl_series:
+            if entry["trade_date"] == trade_date:
+                return {
+                    "trade_date": entry["trade_date"],
+                    "daily_pnl": float(entry["daily_pnl"]),
+                    "cumulative_pnl": float(entry["cumulative_pnl"]),
+                }
+        return None

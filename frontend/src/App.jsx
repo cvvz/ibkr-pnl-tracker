@@ -210,12 +210,18 @@ function App() {
       }));
     };
 
+    positions.forEach((pos) => {
+      if (pos?.id && !tradesByPosition[pos.id]) {
+        fetchTrades(pos.id).catch(() => null);
+      }
+    });
+
     expanded.forEach((positionId) => {
       if (!tradesByPosition[positionId]) {
         fetchTrades(positionId).catch(() => null);
       }
     });
-  }, [expanded, tradesByPosition]);
+  }, [expanded, positions, tradesByPosition]);
 
   const restartGateway = async () => {
     await fetch(`${API_BASE}/gateway/restart`, { method: "POST" });
@@ -445,36 +451,54 @@ function App() {
     );
   };
 
-  const renderCurrentRow = (pos) => (
-    <div className="position-block" key={`${pos.id}-current`}>
-      <div className="row current">
-        <span className="symbol">{pos.symbol}</span>
-        <span>{numberFormatter.format(pos.qty)}</span>
-        <span>{money.format(pos.avg_cost)}</span>
-        <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
-          {money.format(pos.realized_pnl)}
-        </span>
-        <span className={pos.unrealized_pnl >= 0 ? "pos" : "neg"}>
-          {money.format(pos.unrealized_pnl)}
-        </span>
-        <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
-          {money.format(pos.daily_pnl)}
-        </span>
-        <span className={pos.total_pnl >= 0 ? "pos" : "neg"}>
-          {money.format(pos.total_pnl)}
-        </span>
-        <span className="time">
-          <div>{formatDate(pos.open_time)}</div>
-        </span>
-        <button className="toggle" onClick={() => toggleExpanded(pos.id)}>
-          {expanded.has(pos.id) ? "Hide Trades" : "Show Trades"}
-        </button>
+  const renderCurrentRow = (pos) => {
+    const costBasis = Math.abs((pos.qty ?? 0) * (pos.avg_cost ?? 0));
+    const unrealizedRatio =
+      costBasis > 0 ? pos.unrealized_pnl / costBasis : null;
+    const trades = tradesByPosition[pos.id];
+    const commissionTotal = trades
+      ? trades.reduce((sum, trade) => sum + Number(trade.commission || 0), 0)
+      : null;
+
+    return (
+      <div className="position-block" key={`${pos.id}-current`}>
+        <div className="row current">
+          <span className="symbol">{pos.symbol}</span>
+          <span>{numberFormatter.format(pos.qty)}</span>
+          <span>{money.format(pos.avg_cost)}</span>
+          <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
+            {money.format(pos.realized_pnl)}
+          </span>
+          <span>{commissionTotal == null ? "--" : money.format(commissionTotal)}</span>
+          <div className={`cell-stack ${pos.unrealized_pnl >= 0 ? "pos" : "neg"}`}>
+            <span>{money.format(pos.unrealized_pnl)}</span>
+            <span className="cell-sub">
+              {unrealizedRatio == null ? "--" : percentFormatter.format(unrealizedRatio)}
+            </span>
+          </div>
+          <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
+            {money.format(pos.daily_pnl)}
+          </span>
+          <span className={pos.total_pnl >= 0 ? "pos" : "neg"}>
+            {money.format(pos.total_pnl)}
+          </span>
+          <span className="time">
+            <div>{formatDate(pos.open_time)}</div>
+          </span>
+          <button
+            className="toggle"
+            onClick={() => toggleExpanded(pos.id)}
+            aria-label={expanded.has(pos.id) ? "Collapse trades" : "Expand trades"}
+          >
+            {expanded.has(pos.id) ? "-" : "+"}
+          </button>
+        </div>
+        {expanded.has(pos.id) && (
+          <div className="trade-panel">{renderTrades(pos.id)}</div>
+        )}
       </div>
-      {expanded.has(pos.id) && (
-        <div className="trade-panel">{renderTrades(pos.id)}</div>
-      )}
-    </div>
-  );
+    );
+  };
 
   const renderHistoryRow = (pos) => (
     <div className="position-block" key={`${pos.id}-history`}>
@@ -487,8 +511,12 @@ function App() {
         <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
           {money.format(pos.realized_pnl)}
         </span>
-        <button className="toggle" onClick={() => toggleExpanded(pos.id)}>
-          {expanded.has(pos.id) ? "Hide Trades" : "Show Trades"}
+        <button
+          className="toggle"
+          onClick={() => toggleExpanded(pos.id)}
+          aria-label={expanded.has(pos.id) ? "Collapse trades" : "Expand trades"}
+        >
+          {expanded.has(pos.id) ? "-" : "+"}
         </button>
       </div>
       {expanded.has(pos.id) && (
@@ -824,6 +852,7 @@ function App() {
                 <span>Qty</span>
                 <span>Avg Cost</span>
                 <span>Realized</span>
+                <span>Commission</span>
                 <span>Unrealized</span>
                 <span>Daily</span>
                 <span>Total</span>
