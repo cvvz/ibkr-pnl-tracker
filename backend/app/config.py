@@ -48,7 +48,7 @@ def load_settings() -> Settings:
     ws_update_interval_seconds = float(os.getenv("IBKR_WS_UPDATE_INTERVAL_SECONDS", "0.3"))
     gateway_deployment = os.getenv("IBKR_GATEWAY_DEPLOYMENT", "ib-gateway")
     gateway_namespace = os.getenv("IBKR_GATEWAY_NAMESPACE", "default")
-    gateway_vnc_url = os.getenv("IBKR_GATEWAY_VNC_URL", "")
+    gateway_vnc_url = os.getenv("IBKR_GATEWAY_VNC_URL", "http://192.168.50.119:6080/vnc.html?autoconnect=1&path=websockify")
     gateway_restart_enabled = os.getenv("IBKR_GATEWAY_RESTART_ENABLED", "false").lower() in {
         "1",
         "true",

@@ -168,6 +168,9 @@ def sync_status() -> Dict[str, Any]:
         "last_disconnected_at": status.last_disconnected_at,
         "last_update": status.last_update,
         "error": status.error,
+        "ibkr_connected": status.ibkr_connected,
+        "ibkr_last_connected_at": status.ibkr_last_connected_at,
+        "ibkr_last_disconnected_at": status.ibkr_last_disconnected_at,
     }
 
 
@@ -182,6 +185,9 @@ def sync_health() -> Dict[str, Any]:
         "last_disconnected_at": status.last_disconnected_at,
         "last_update": status.last_update,
         "error": status.error,
+        "ibkr_connected": status.ibkr_connected,
+        "ibkr_last_connected_at": status.ibkr_last_connected_at,
+        "ibkr_last_disconnected_at": status.ibkr_last_disconnected_at,
         "vnc_url": settings.gateway_vnc_url,
     }
 

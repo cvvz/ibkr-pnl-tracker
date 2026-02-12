@@ -62,6 +62,7 @@ function App() {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [ibStatus, setIbStatus] = useState({
     connected: false,
+    ibkr_connected: false,
     error: null,
     last_update: null,
     last_connected_at: null,
@@ -161,6 +162,7 @@ function App() {
           setIbStatus((prev) => ({
             ...prev,
             connected: false,
+            ibkr_connected: false,
             error: "IB status unavailable"
           }));
         }
@@ -263,11 +265,16 @@ function App() {
     window.setTimeout(() => setOrderStatus(null), 5000);
   };
 
-  const ibkrStatusClass = ibStatus.connected
+  const gatewayConnected = ibStatus.connected;
+  const ibkrConnected = ibStatus.ibkr_connected === true;
+  const gatewayStatusClass = gatewayConnected
     ? "live"
     : ibStatus.error
     ? "error"
     : "disconnected";
+  const ibkrStatusClass = ibkrConnected ? "live" : "error";
+  const showReauth =
+    ibStatus.vnc_url && (!gatewayConnected || ibStatus.ibkr_connected === false);
 
   const accountTotalPnl = summary?.total_pnl ?? null;
 
@@ -281,18 +288,13 @@ function App() {
       top: 22,
       right: 24,
       bottom: 28,
-      left: 48
+      left: 72
     };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
-    const lastIndex = dailyPnlTrendSeries.length - 1;
-    const values = dailyPnlTrendSeries.map((item, index) => {
-      const value = item.cumulative_pnl ?? 0;
-      if (accountTotalPnl != null && index === lastIndex) {
-        return accountTotalPnl;
-      }
-      return value;
-    });
+    const values = dailyPnlTrendSeries.map(
+      (item) => item.cumulative_pnl ?? 0
+    );
     const allValues = [...values, 0];
     const minValue = Math.min(...allValues);
     const maxValue = Math.max(...allValues);
@@ -346,7 +348,7 @@ function App() {
       ticks,
       labels
     };
-  }, [dailyPnlTrendSeries, accountTotalPnl]);
+  }, [dailyPnlTrendSeries]);
 
   const healthMetrics = useMemo(() => {
     if (!accountSummary) {
@@ -522,10 +524,13 @@ function App() {
             <div className="side-actions">
               <div className="status-group">
                 <span className={`status ${wsStatus}`}>WS {wsStatus}</span>
-                <span className={`status ${ibkrStatusClass}`}>
-                  {ibStatus.connected ? "IB Connected" : "IB Disconnected"}
+                <span className={`status ${gatewayStatusClass}`}>
+                  {gatewayConnected ? "Gateway Connected" : "Gateway Disconnected"}
                 </span>
-                {!ibStatus.connected && ibStatus.vnc_url && (
+                <span className={`status ${ibkrStatusClass}`}>
+                  {ibkrConnected ? "IBKR Connected" : "IBKR Disconnected"}
+                </span>
+                {showReauth && (
                   <button className="btn tiny" onClick={restartGateway}>
                     Re-auth (VNC)
                   </button>
@@ -558,7 +563,6 @@ function App() {
               >
                 {summary?.daily_pnl != null ? money.format(summary.daily_pnl) : "--"}
               </strong>
-              <div className="summary-sub">Latest daily PnL snapshot</div>
             </div>
             <div
               className={`summary-card ${
@@ -581,9 +585,6 @@ function App() {
               >
                 {accountTotalPnl != null ? money.format(accountTotalPnl) : "--"}
               </strong>
-              <div className="summary-sub">
-                Current positions total + historical realized
-              </div>
             </div>
           </div>
         </header>

@@ -172,6 +172,9 @@ class SyncStatus:
     last_update: Optional[str] = None
     last_connected_at: Optional[str] = None
     last_disconnected_at: Optional[str] = None
+    ibkr_connected: Optional[bool] = None
+    ibkr_last_connected_at: Optional[str] = None
+    ibkr_last_disconnected_at: Optional[str] = None
 
 
 @dataclass
@@ -280,6 +283,8 @@ class IBKRSyncManager:
                 )
                 self._status.connected = True
                 self._status.last_connected_at = _utc_now()
+                self._status.ibkr_connected = True
+                self._status.ibkr_last_connected_at = _utc_now()
                 self._status.error = None
                 logger.info("IB connected ok")
 
@@ -681,6 +686,17 @@ class IBKRSyncManager:
                         span,
                         f"daily={daily_value} unrealized={unrealized_value} realized={realized_value}",
                     )
+
+                def on_error(
+                    req_id: int, error_code: int, error_string: str, contract=None, *args
+                ) -> None:
+                    if error_code == 1100:
+                        self._status.ibkr_connected = False
+                        self._status.ibkr_last_disconnected_at = _utc_now()
+                        return
+                    if error_code in {1101, 1102}:
+                        self._status.ibkr_connected = True
+                        self._status.ibkr_last_connected_at = _utc_now()
 
                 def on_account_summary(*args) -> None:
                     span = span_start("on_account_summary")
@@ -1210,6 +1226,7 @@ class IBKRSyncManager:
                 ib.pnlEvent += on_pnl
                 ib.accountSummaryEvent += on_account_summary
                 ib.pnlSingleEvent += on_pnl_single
+                ib.errorEvent += on_error
 
                 request_positions()
                 logger.info("request_positions done")
@@ -1259,11 +1276,15 @@ class IBKRSyncManager:
                 if not self._stop_event.is_set():
                     self._status.connected = False
                     self._status.last_disconnected_at = _utc_now()
+                    self._status.ibkr_connected = False
+                    self._status.ibkr_last_disconnected_at = _utc_now()
                     self._status.error = "Disconnected from IB Gateway"
 
             except Exception as exc:  # pragma: no cover
                 self._status.connected = False
                 self._status.last_disconnected_at = _utc_now()
+                self._status.ibkr_connected = False
+                self._status.ibkr_last_disconnected_at = _utc_now()
                 self._status.error = str(exc)
             finally:
                 if conn:
