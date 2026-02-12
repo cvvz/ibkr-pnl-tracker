@@ -455,6 +455,7 @@ function App() {
     const costBasis = Math.abs((pos.qty ?? 0) * (pos.avg_cost ?? 0));
     const unrealizedRatio =
       costBasis > 0 ? pos.unrealized_pnl / costBasis : null;
+    const totalRatio = costBasis > 0 ? pos.total_pnl / costBasis : null;
     const trades = tradesByPosition[pos.id];
     const commissionTotal = trades
       ? trades.reduce((sum, trade) => sum + Number(trade.commission || 0), 0)
@@ -464,27 +465,30 @@ function App() {
       <div className="position-block" key={`${pos.id}-current`}>
         <div className="row current">
           <span className="symbol">{pos.symbol}</span>
+          <span className="time">
+            <div>{formatDate(pos.open_time)}</div>
+          </span>
           <span>{numberFormatter.format(pos.qty)}</span>
           <span>{money.format(pos.avg_cost)}</span>
+          <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
+            {money.format(pos.daily_pnl)}
+          </span>
           <span className={pos.realized_pnl >= 0 ? "pos" : "neg"}>
             {money.format(pos.realized_pnl)}
           </span>
-          <span>{commissionTotal == null ? "--" : money.format(commissionTotal)}</span>
           <div className={`cell-stack ${pos.unrealized_pnl >= 0 ? "pos" : "neg"}`}>
             <span>{money.format(pos.unrealized_pnl)}</span>
             <span className="cell-sub">
               {unrealizedRatio == null ? "--" : percentFormatter.format(unrealizedRatio)}
             </span>
           </div>
-          <span className={pos.daily_pnl >= 0 ? "pos" : "neg"}>
-            {money.format(pos.daily_pnl)}
-          </span>
-          <span className={pos.total_pnl >= 0 ? "pos" : "neg"}>
-            {money.format(pos.total_pnl)}
-          </span>
-          <span className="time">
-            <div>{formatDate(pos.open_time)}</div>
-          </span>
+          <span>{commissionTotal == null ? "--" : money.format(commissionTotal)}</span>
+          <div className={`cell-stack ${pos.total_pnl >= 0 ? "pos" : "neg"}`}>
+            <span>{money.format(pos.total_pnl)}</span>
+            <span className="cell-sub">
+              {totalRatio == null ? "--" : percentFormatter.format(totalRatio)}
+            </span>
+          </div>
           <button
             className="toggle"
             onClick={() => toggleExpanded(pos.id)}
@@ -849,14 +853,14 @@ function App() {
             <div className="table">
               <div className="row header current">
                 <span>Symbol</span>
+                <span>Time</span>
                 <span>Qty</span>
                 <span>Avg Cost</span>
-                <span>Realized</span>
-                <span>Commission</span>
-                <span>Unrealized</span>
                 <span>Daily</span>
+                <span>Realized</span>
+                <span>Unrealized</span>
+                <span>FEE</span>
                 <span>Total</span>
-                <span>Time</span>
                 <span></span>
               </div>
               {positions.length === 0 && (
