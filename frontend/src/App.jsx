@@ -170,7 +170,7 @@ function App() {
     };
 
     fetchHealth();
-    const interval = setInterval(fetchHealth, 5000);
+    const interval = setInterval(fetchHealth, 2000);
 
     return () => {
       active = false;
