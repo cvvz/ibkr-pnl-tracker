@@ -1,219 +1,179 @@
 # IBKR PnL Tracker
 
-Local, real-time portfolio PnL tracking for IBKR using IBKR-pushed positions, executions, commissions, and unrealized PnL.
+[English](#english) | [中文](#中文)
 
-## Features
-- Live positions and PnL (realized, unrealized, total) from IBKR events
-- IBKR Gateway integration via `ib_insync`
-- PostgreSQL storage for trades and position snapshots
-- React dashboard with WebSocket updates
+## English
 
-## Backend Setup
+IBKR PnL Tracker is a real-time trading PnL dashboard for Interactive Brokers. It connects to IB Gateway, caches live data in memory, and periodically persists only the necessary updates to the database to reduce write pressure. The frontend consumes WebSocket updates for live views and REST APIs for snapshots.
 
-```bash
-cd backend
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-```
+![Dashboard Overview](./image.png)
 
-PowerShell:
+**Key Features**
+- Real-time positions, historical positions, daily PnL, and total PnL with live WebSocket updates.
+- Cumulative Daily PnL trend chart with hover tooltips.
+- Account health metrics (net liquidation, available funds, margin requirements).
+- Gateway status and IBKR server connectivity status, with quick re-auth entry.
+- Order placement panel (market/limit) with order status feedback.
+- Trade drill-down per position, including fee totals (computed client-side).
 
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+**Data Flow**
+- IB Gateway pushes positions, PnL, and account summaries to the backend.
+- Backend maintains an in-memory cache for fast reads and reduces database writes.
+- Frontend reads from WebSocket for real-time views and REST endpoints for snapshots.
 
-Run the API:
+**Use Cases**
+- Monitor current positions and PnL in one place.
+- Track daily performance trends across sessions.
+- Check account liquidity and margin health at a glance.
 
-```bash
-uvicorn app.main:app --reload
-```
+**Current Positions Fields**
+- `Symbol`: Ticker symbol.
+- `Time`: Position open time (Beijing time).
+- `Qty`: Position size.
+- `Avg Cost`: Average entry cost.
+- `Value`: `Qty * Avg Cost` (not stored in DB).
+- `Daily`: Daily PnL for this position.
+- `Realized`: Realized PnL for this position.
+- `Unrealized`: Unrealized PnL; the percent below is `Unrealized / |Qty * Avg Cost|`.
+- `FEE`: Sum of commissions for trades under this position (computed client-side).
+- `Total`: Total PnL; the percent below is `Total / |Qty * Avg Cost|`.
 
-Note: `IBKR_DATABASE_URL` (PostgreSQL) must be set before starting the API.
+**Historical Positions**
+Closed positions are listed in `Historical Positions`, showing open/close time and realized PnL. You can expand a row to see the trade list for that position.
 
-### IBKR Environment Variables
+**Quick Start (Single Host, Docker)**
+Assumes frontend, backend, and IB Gateway are on the same machine. For more details, see `deployment.md`.
 
-- `IBKR_DATABASE_URL` (required, PostgreSQL connection string)
-- `IBKR_HOST` (default `127.0.0.1`)
-- `IBKR_PORT` (default `7497`)
-- `IBKR_CLIENT_ID` (default `1`)
-- `IBKR_ORDER_CLIENT_ID` (default `IBKR_CLIENT_ID + 1`)
-- `IBKR_BASE_CURRENCY` (default `USD`)
-- `IBKR_READONLY` (default `true`)
-- `IBKR_AUTO_SYNC` (default `true`)
-- `IBKR_RECONNECT_MIN_DELAY` (default `3` seconds)
-- `IBKR_RECONNECT_MAX_DELAY` (default `60` seconds)
-- `IBKR_KEEPALIVE_SECONDS` (default `15` seconds)
-- `IBKR_GATEWAY_RESTART_ENABLED` (default `false`)
-- `IBKR_GATEWAY_DEPLOYMENT` (default `ib-gateway`)
-- `IBKR_GATEWAY_NAMESPACE` (default `default`)
-- `IBKR_GATEWAY_VNC_URL` (default empty)
-
-Sync health:
-
-```bash
-curl http://localhost:8000/sync/health
-```
-
-Restart IB Gateway (requires k8s RBAC + env config):
-
-```bash
-curl -X POST http://localhost:8000/gateway/restart
-```
-
-Place order (market or limit):
-
-```bash
-curl -X POST http://localhost:8000/orders \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"AAPL","qty":1,"side":"buy","order_type":"MKT"}'
-```
-
-### Recommended IBKR User Setup (Avoid Disconnects)
-
-IBKR treats a single username session as mutually exclusive. Logging into IBKR Portal or the mobile app with the same user can force IB Gateway to disconnect. To keep the gateway connected while you trade elsewhere:
-
-- Create a **Secondary User** dedicated to IB Gateway.
-- Grant **API access + account data** but **no trading permission** (read-only).
-- Use this secondary user for IB Gateway, and your main user for web/mobile trading.
-
-This prevents your web/mobile sessions from kicking the gateway offline.
-
-### IB Gateway Data Flow
-
-Passive events (IB Gateway push to backend):
-- `positionEvent`: current positions (symbol, qty, avgCost) -> `positions`
-- `execDetailsEvent`: trade executions (time, price, qty, side) -> `trades`
-- `commissionReportEvent`: commission/realized PnL by execId -> `trades.commission` + `trades.realized_pnl`
-- `pnlSingleEvent` (from `reqPnLSingle`): unrealized PnL -> `positions.unrealized_pnl`
-
-Active requests (backend pull from IB Gateway):
-- `reqPositions()`: positions snapshot on connect -> `positions`
-- `reqExecutions()`: executions backfill on connect -> `trades`
-- `reqPnLSingle()`: unrealized PnL by position -> `positions.unrealized_pnl`
-- `reqCurrentTime()`: keepalive heartbeat
-
-## Frontend Setup
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Set API base if needed:
-
-```bash
-VITE_API_BASE=http://localhost:8000
-```
-
-## 本地/局域网部署（单机）
-
-默认假设：前端、后端、IB Gateway/TWS 部署在同一台机器。
-
-### 1) IB Gateway / TWS 设置
-1. 启用 API：`Enable ActiveX and Socket Clients`
-1. Trusted IPs 填 `127.0.0.1`
-1. 端口使用默认 `4001`（IB Gateway）或 `7497`（TWS）
-
-### 1.1) IB Gateway 部署方式（本地/单机）
-推荐直接安装并运行 **IB Gateway** 客户端（更稳定、更省资源）。
-
-如需 Docker 方式，可用仓库里的镜像构建：
-```powershell
-cd ~/workspace/ibkr-pnl-tracker/ib-gateway
+1. Build and run IB Gateway:
+```shell
+cd ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
 docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
 ```
-说明：端口 `4001` 为 IB Gateway API，`5900/6080` 用于 VNC/网页版登录和 2FA。  
-更多细节见 `ib-gateway/README.md`。
 
-### 2) PostgreSQL（本地）
-```powershell
-docker run -d --name ibkr-postgres --network ibkr-net `
-  -e POSTGRES_USER=ibkr -e POSTGRES_PASSWORD=ibkr -e POSTGRES_DB=ibkr `
-  -p 5432:5432 postgres:16
-```
-本地连接字符串示例：`postgresql://ibkr:ibkr@127.0.0.1:5432/ibkr`
+1. IB Gateway UI settings: `configuration -> Settings -> API -> Settings`
+- Set `Trusted IPs` to the backend container IP.
+- Uncheck `Read-Only API`.
 
-### 3) 后端（Docker）
-```powershell
-cd ~/workspace/ibkr-pnl-tracker/backend
-docker build -t ibkr-backend:local \
- --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
- .
-# docker build -t ibkr-backend:local .
+1. Prepare Postgres and set `IBKR_DATABASE_URL`.
 
-# %2F 是 '/' 的 URL 编码
+2. Build and run backend:
+```shell
+cd backend
+docker build -t ibkr-backend:local .
 docker run -d --name ibkr-backend \
   --network ibkr-net \
   --ip 172.18.0.11 \
   -p 8000:8000 \
-  -e IBKR_DATABASE_URL=postgresql://weizhi:q7410%2F8520@ib-pg.postgres.database.azure.com:5432/ib \
+  -e IBKR_DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB \
   -e IBKR_HOST=ib-gateway \
   -e IBKR_PORT=4001 \
   -e IBKR_READONLY=false \
   ibkr-backend:local
 ```
-如果你使用 TWS 而不是 IB Gateway，把 `IBKR_PORT` 改成 `7497`。
 
-#### 容器互联注意
-如果 **IB Gateway 在容器里**，后端容器不能用 `127.0.0.1` 连接它。推荐两种方式：
-
-- **Windows / macOS**：后端用 `IBKR_HOST=host.docker.internal`
-- **Linux / 任意平台**：创建自定义网络，后端用容器名连接
-
-示例（同一 Docker 网络）：
-```powershell
-docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
-docker run -d --name ibkr-postgres --network ibkr-net `
-  -e POSTGRES_USER=ibkr -e POSTGRES_PASSWORD=ibkr -e POSTGRES_DB=ibkr `
-  -p 5432:5432 postgres:16
-docker run -d --name ibkr-backend --network ibkr-net -p 8000:8000 `
-  -e IBKR_DATABASE_URL=postgresql://ibkr:ibkr@ibkr-postgres:5432/ibkr `
-  -e IBKR_HOST=ib-gateway -e IBKR_PORT=4001 -e IBKR_READONLY=false `
-  ibkr-backend:local
-```
-
-### 4) 前端（Docker）
-本地访问：
-```powershell
-cd ~/workspace/ibkr-pnl-tracker/frontend
-docker build -t ibkr-frontend:local --build-arg VITE_API_BASE=http://127.0.0.1:8000 .
-docker run -d --name ibkr-frontend -p 8080:80 ibkr-frontend:local
-```
-
-局域网访问：
-```powershell
-cd ~/workspace/ibkr-pnl-tracker/frontend
-docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://192.168.50.119:8000 .
+1. Build and run frontend:
+```shell
+cd frontend
+docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<HOST_IP>:8000 .
 docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
 ```
 
-局域网其它设备访问：`http://<服务器内网IP>`
+**Notes**
+- If IB Gateway is in Docker, do not use `127.0.0.1` from the backend. Use the container name on the same Docker network.
+- VNC/Web login is exposed on `5900/6080`.
+- If your host uses a proxy, allow direct access for `ibkr.com` and `ibllc.com`.
+- Logging in to the same IBKR account from other clients (web/mobile) may disconnect IB Gateway. Use VNC to reconnect.
+- IBKR trade events must be on the same connection as order placement. Placing orders elsewhere may cause missing trade events here.
 
-## Notes
-- The system surfaces IBKR-provided realized PnL per execution (commission report event) and sums it per position.
-- Unrealized PnL is taken from IBKR `reqPnLSingle` updates.
+**Details**
+For architecture and behavior details, see `details.md`.
 
-## TODO
-- Review database backup/restore strategy for cloud PostgreSQL.
+## 中文
 
-## Kubernetes
-See `ibkr-pnl-tracker/k8s/README.txt` for AKS-ready manifests (frontend, backend, IB Gateway, VNC, RBAC).
+IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它连接 IB Gateway，将实时数据优先写入内存，并仅在需要时周期性落库，从而降低数据库读写压力。前端通过 WebSocket 获取实时数据，通过 REST 接口获取快照数据。
 
-## IB Gateway Image
-Self-build Dockerfile is available at `ibkr-pnl-tracker/ib-gateway/Dockerfile`. See `ibkr-pnl-tracker/ib-gateway/README.md` for build/run instructions.
+![仪表盘概览](./image.png)
 
+**核心功能**
+- 实时持仓、历史持、当日盈亏与总盈亏展示（WebSocket 实时更新）。
+- Daily PnL 累加趋势图，支持悬浮查看数值。
+- 账户健康度指标（净清算值、可用资金、保证金需求等）。
+- Gateway 与 IBKR 服务器连接状态区分显示，支持一键 Re-auth。
+- 下单面板（市价/限价），并返回下单状态反馈。
+- 每个持仓支持交易明细展开，手续费合计前端计算展示。
 
+**数据流**
+- IB Gateway 推送持仓、PnL 与账户汇总数据到后端。
+- 后端使用内存缓存提升读性能，并降低 DB 写入频率。
+- 前端实时数据来自 WebSocket，快照数据来自 REST 接口。
 
+**适用场景**
+- 集中监控实时持仓与盈亏。
+- 查看每日盈亏趋势与累计变化。
+- 快速判断账户流动性与风险水平。
 
+**当前持仓字段说明**
+- `Symbol`：标的代码。
+- `Time`：开仓时间（北京时间）。
+- `Qty`：持仓数量。
+- `Avg Cost`：平均成本。
+- `Value`：`Qty * Avg Cost`（前端计算，不落库）。
+- `Daily`：该持仓当日盈亏。
+- `Realized`：该持仓已实现盈亏。
+- `Unrealized`：该持仓未实现盈亏；下方百分比为 `Unrealized / |Qty * Avg Cost|`。
+- `FEE`：该持仓关联的成交手续费合计（前端计算）。
+- `Total`：该持仓总盈亏；下方百分比为 `Total / |Qty * Avg Cost|`。
 
-要加这两个规则，否额则无法访问 IBKR 的域名，导致无法连接 IB Gateway API。
-- DOMAIN-SUFFIX,ibllc.com, 🎯 全球直连
-- DOMAIN-SUFFIX,ibkr.com, 🎯 全球直连
+**历史持仓**
+已平仓的持仓会显示在 `Historical Positions` 列表，包含开/平仓时间与已实现盈亏。点击展开可查看该持仓的成交明细。
+
+**快速开始（单机 Docker）**
+默认前端、后端、IB Gateway 部署在同一台机器。更详细说明见 `deployment.md`。
+
+1. 构建并启动 IB Gateway：
+```shell
+cd ib-gateway
+docker build --platform=linux/amd64 -t ib-gateway:local .
+docker network create ibkr-net
+docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+```
+
+1. IB Gateway 后台设置：`configuration -> Settings -> API -> Settings`
+- `Trusted IPs` 填 backend 容器 IP。
+- 取消勾选 `Read-Only API`。
+
+1. 准备 PostgreSQL，并设置 `IBKR_DATABASE_URL`。
+
+2. 构建并启动后端：
+```shell
+cd backend
+docker build -t ibkr-backend:local .
+docker run -d --name ibkr-backend \
+  --network ibkr-net \
+  --ip 172.18.0.11 \
+  -p 8000:8000 \
+  -e IBKR_DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB \
+  -e IBKR_HOST=ib-gateway \
+  -e IBKR_PORT=4001 \
+  -e IBKR_READONLY=false \
+  ibkr-backend:local
+```
+
+1. 构建并启动前端：
+```shell
+cd frontend
+docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<HOST_IP>:8000 .
+docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+```
+
+**注意事项**
+- 如果 IB Gateway 在 Docker 里，后端不要用 `127.0.0.1`，请使用同一网络下的容器名。
+- VNC/网页版登录端口为 `5900/6080`。
+- 如果机器使用代理，需要对 `ibkr.com`、`ibllc.com` 走直连。
+- 如果在其他客户端（网页/手机）登录同一 IBKR 账号，可能导致 IB Gateway 断开，需要通过 VNC 点击 reconnect。
+- 交易事件监听与下单必须在同一连接，否则在其他地方下单可能导致本系统收不到成交事件。
+
+**技术细节**
+如需更深入的架构与行为说明，请参考 `details.md`。
