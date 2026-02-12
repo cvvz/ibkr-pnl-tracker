@@ -328,18 +328,20 @@ class IBKRSyncManager:
                     self._status.last_update = _utc_now()
 
                 def span_start(label: str, extra: str = "") -> float:
+                    log_fn = logger.info if label.startswith("flush_") else logger.debug
                     if extra:
-                        logger.info("Span start %s %s", label, extra)
+                        log_fn("Span start %s %s", label, extra)
                     else:
-                        logger.info("Span start %s", label)
+                        log_fn("Span start %s", label)
                     return time.perf_counter()
 
                 def span_end(label: str, start: float, extra: str = "") -> None:
                     duration = time.perf_counter() - start
+                    log_fn = logger.info if label.startswith("flush_") else logger.debug
                     if extra:
-                        logger.info("Span end %s %.3fs %s", label, duration, extra)
+                        log_fn("Span end %s %.3fs %s", label, duration, extra)
                     else:
-                        logger.info("Span end %s %.3fs", label, duration)
+                        log_fn("Span end %s %.3fs", label, duration)
 
                 def coerce_float(value: object) -> float | None:
                     try:
@@ -376,6 +378,7 @@ class IBKRSyncManager:
                             row["currency"],
                         )
                         self._cache.record_exec_realized(exec_id, position_key, realized)
+                        update_position_realized_db(position_key)
                         maybe_update_history_from_trade(
                             row["symbol"],
                             row["exchange"],
@@ -473,6 +476,22 @@ class IBKRSyncManager:
                         )
                         conn.commit()
                         self._cache.update_open_time(symbol, currency, trade_time)
+
+                def update_position_realized_db(position_key: tuple[str, str, str]) -> None:
+                    realized_value = self._cache.get_position_realized(position_key)
+                    if realized_value is None:
+                        return
+                    ensure_conn()
+                    symbol, exchange, currency = position_key
+                    conn.execute(
+                        """
+                        UPDATE positions
+                        SET realized_pnl = %s, updated_at = %s
+                        WHERE account_id = %s AND symbol = %s AND exchange = %s AND currency = %s
+                        """,
+                        (realized_value, _utc_now(), account_id, symbol, exchange, currency),
+                    )
+                    conn.commit()
 
                 def update_account_daily_pnl(daily_value: float) -> None:
                     trade_date = _trade_date_et()
@@ -605,6 +624,7 @@ class IBKRSyncManager:
                             contract.currency,
                         )
                         self._cache.record_exec_realized(exec_id, position_key, realized)
+                        update_position_realized_db(position_key)
                     span_end("on_exec", span, f"symbol={contract.symbol} exec_id={exec_id}")
 
                 def on_commission(*args):

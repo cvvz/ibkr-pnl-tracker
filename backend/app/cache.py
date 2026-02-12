@@ -91,7 +91,8 @@ class CacheStore:
         realized_total = float(realized_row["total"]) if realized_row else 0.0
         positions = conn.execute(
             """
-            SELECT id, symbol, exchange, currency, qty, avg_cost, unrealized_pnl, daily_pnl, open_time, con_id
+            SELECT id, symbol, exchange, currency, qty, avg_cost, realized_pnl, unrealized_pnl, daily_pnl,
+                   open_time, con_id
             FROM positions
             WHERE account_id = %s
             ORDER BY symbol
@@ -101,7 +102,7 @@ class CacheStore:
 
         history = conn.execute(
             """
-            SELECT id, symbol, exchange, currency, open_time, close_time
+            SELECT id, symbol, exchange, currency, open_time, close_time, realized_pnl
             FROM positions_history
             WHERE account_id = %s
             ORDER BY close_time DESC
@@ -143,7 +144,7 @@ class CacheStore:
                 exchange = row["exchange"] or ""
                 currency = row["currency"]
                 open_time = row["open_time"]
-                realized = _sum_realized(conn, account_id, symbol, currency, start_time=open_time)
+                realized = float(row["realized_pnl"])
                 unrealized = float(row["unrealized_pnl"])
                 daily = float(row["daily_pnl"])
                 total = realized + unrealized
@@ -173,14 +174,7 @@ class CacheStore:
                 currency = row["currency"]
                 open_time = row["open_time"]
                 close_time = row["close_time"]
-                realized = _sum_realized(
-                    conn,
-                    account_id,
-                    symbol,
-                    currency,
-                    start_time=open_time,
-                    end_time=close_time,
-                )
+                realized = float(row["realized_pnl"])
                 self.history_by_id[int(row["id"])] = {
                     "id": int(row["id"]),
                     "symbol": symbol,
@@ -384,6 +378,13 @@ class CacheStore:
                 self.realized_total += delta
         if delta:
             self.apply_realized_delta(position_key, delta)
+
+    def get_position_realized(self, position_key: tuple[str, str, str]) -> float | None:
+        with self._lock:
+            entry = self.positions_by_key.get(position_key)
+            if not entry:
+                return None
+            return float(entry.get("realized_pnl", 0.0))
 
     def snapshot_positions(self) -> list[dict[str, Any]]:
         with self._lock:
