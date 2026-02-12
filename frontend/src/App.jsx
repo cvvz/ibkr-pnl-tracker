@@ -70,6 +70,7 @@ function App() {
   const [expanded, setExpanded] = useState(new Set());
   const [tradesByPosition, setTradesByPosition] = useState({});
   const [activeView, setActiveView] = useState("current");
+  const [hoveredTrendPoint, setHoveredTrendPoint] = useState(null);
   const [orderForm, setOrderForm] = useState({
     symbol: "",
     qty: 1,
@@ -276,7 +277,14 @@ function App() {
     }
     const width = 640;
     const height = 220;
-    const padding = 32;
+    const padding = {
+      top: 22,
+      right: 24,
+      bottom: 28,
+      left: 48
+    };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
     const lastIndex = dailyPnlTrendSeries.length - 1;
     const values = dailyPnlTrendSeries.map((item, index) => {
       const value = item.cumulative_pnl ?? 0;
@@ -291,17 +299,35 @@ function App() {
     const range = maxValue - minValue || 1;
     const stepX =
       dailyPnlTrendSeries.length > 1
-        ? (width - padding * 2) / (dailyPnlTrendSeries.length - 1)
+        ? chartWidth / (dailyPnlTrendSeries.length - 1)
         : 0;
     const toPoint = (value, index) => {
-      const x = padding + index * stepX;
+      const x = padding.left + index * stepX;
       const y =
         height -
-        padding -
-        ((value - minValue) / range) * (height - padding * 2);
-      return `${x},${y}`;
+        padding.bottom -
+        ((value - minValue) / range) * chartHeight;
+      return { x, y };
     };
-    const points = values.map(toPoint).join(" ");
+    const valuePoints = values.map((value, index) => {
+      const point = toPoint(value, index);
+      return {
+        ...point,
+        value,
+        index,
+        date: dailyPnlTrendSeries[index]?.trade_date ?? "--"
+      };
+    });
+    const points = valuePoints.map((point) => `${point.x},${point.y}`).join(" ");
+    const ticks = [maxValue, (minValue + maxValue) / 2, minValue].map(
+      (value) => ({
+        value,
+        y:
+          height -
+          padding.bottom -
+          ((value - minValue) / range) * chartHeight
+      })
+    );
     const labels = {
       start: dailyPnlTrendSeries[0]?.trade_date,
       mid:
@@ -314,7 +340,10 @@ function App() {
       height,
       minValue,
       maxValue,
+      padding,
       points,
+      valuePoints,
+      ticks,
       labels
     };
   }, [dailyPnlTrendSeries, accountTotalPnl]);
@@ -567,26 +596,82 @@ function App() {
             </div>
             {dailyPnlTrendChart ? (
               <div className="chart">
-                <svg
-                  className="pnl-chart"
-                  viewBox={`0 0 ${dailyPnlTrendChart.width} ${dailyPnlTrendChart.height}`}
-                  role="img"
-                  aria-label="Cumulative PnL trend curve"
-                >
-                  <defs>
-                    <linearGradient id="tradeLine" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#2a6f7d" />
-                      <stop offset="100%" stopColor="#6bb49c" />
-                    </linearGradient>
-                  </defs>
-                  <polyline
-                    className="pnl-line cumulative"
-                    points={dailyPnlTrendChart.points}
-                    fill="none"
-                    stroke="url(#tradeLine)"
-                    strokeWidth="3"
-                  />
-                </svg>
+                <div className="chart-canvas">
+                  <svg
+                    className="pnl-chart"
+                    viewBox={`0 0 ${dailyPnlTrendChart.width} ${dailyPnlTrendChart.height}`}
+                    role="img"
+                    aria-label="Cumulative PnL trend curve"
+                  >
+                    <defs>
+                      <linearGradient id="tradeLine" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#2a6f7d" />
+                        <stop offset="100%" stopColor="#6bb49c" />
+                      </linearGradient>
+                    </defs>
+                    <line
+                      className="chart-axis"
+                      x1={dailyPnlTrendChart.padding.left}
+                      y1={dailyPnlTrendChart.padding.top}
+                      x2={dailyPnlTrendChart.padding.left}
+                      y2={dailyPnlTrendChart.height - dailyPnlTrendChart.padding.bottom}
+                    />
+                    {dailyPnlTrendChart.ticks.map((tick, index) => (
+                      <g key={`tick-${index}`}>
+                        <line
+                          className="chart-grid"
+                          x1={dailyPnlTrendChart.padding.left}
+                          y1={tick.y}
+                          x2={
+                            dailyPnlTrendChart.width -
+                            dailyPnlTrendChart.padding.right
+                          }
+                          y2={tick.y}
+                        />
+                        <text
+                          className="chart-axis-label"
+                          x={dailyPnlTrendChart.padding.left - 8}
+                          y={tick.y + 4}
+                          textAnchor="end"
+                        >
+                          {money.format(tick.value)}
+                        </text>
+                      </g>
+                    ))}
+                    <polyline
+                      className="pnl-line cumulative"
+                      points={dailyPnlTrendChart.points}
+                      fill="none"
+                      stroke="url(#tradeLine)"
+                      strokeWidth="3"
+                    />
+                    {dailyPnlTrendChart.valuePoints.map((point) => (
+                      <circle
+                        key={`point-${point.index}`}
+                        className="pnl-point"
+                        cx={point.x}
+                        cy={point.y}
+                        r="4"
+                        onMouseEnter={() => setHoveredTrendPoint(point)}
+                        onMouseLeave={() => setHoveredTrendPoint(null)}
+                      />
+                    ))}
+                  </svg>
+                  {hoveredTrendPoint && (
+                    <div
+                      className="chart-tooltip"
+                      style={{
+                        left: `${hoveredTrendPoint.x + 12}px`,
+                        top: `${hoveredTrendPoint.y - 12}px`
+                      }}
+                    >
+                      <div className="chart-tooltip-date">
+                        {hoveredTrendPoint.date}
+                      </div>
+                      <strong>{money.format(hoveredTrendPoint.value)}</strong>
+                    </div>
+                  )}
+                </div>
                 <div className="chart-labels">
                   <span>{dailyPnlTrendChart.labels.start ?? "--"}</span>
                   <span>{dailyPnlTrendChart.labels.mid ?? "--"}</span>

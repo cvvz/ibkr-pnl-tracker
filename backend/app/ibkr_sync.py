@@ -328,20 +328,18 @@ class IBKRSyncManager:
                     self._status.last_update = _utc_now()
 
                 def span_start(label: str, extra: str = "") -> float:
-                    log_fn = logger.info if label.startswith("flush_") else logger.debug
                     if extra:
-                        log_fn("Span start %s %s", label, extra)
+                        logger.debug("Span start %s %s", label, extra)
                     else:
-                        log_fn("Span start %s", label)
+                        logger.debug("Span start %s", label)
                     return time.perf_counter()
 
                 def span_end(label: str, start: float, extra: str = "") -> None:
                     duration = time.perf_counter() - start
-                    log_fn = logger.info if label.startswith("flush_") else logger.debug
                     if extra:
-                        log_fn("Span end %s %.3fs %s", label, duration, extra)
+                        logger.debug("Span end %s %.3fs %s", label, duration, extra)
                     else:
-                        log_fn("Span end %s %.3fs", label, duration)
+                        logger.debug("Span end %s %.3fs", label, duration)
 
                 def coerce_float(value: object) -> float | None:
                     try:
@@ -497,12 +495,13 @@ class IBKRSyncManager:
                     trade_date = _trade_date_et()
                     self._cache.update_daily_pnl(trade_date, daily_value)
 
-                def update_account_summary(tag: str, value: float) -> None:
+                def update_account_summary(tag: str, value: float) -> str | None:
                     column = _ACCOUNT_SUMMARY_TAGS.get(tag)
                     if not column:
-                        return
+                        return None
                     self._cache.update_account_summary(column, value)
                     mark_update()
+                    return column
 
                 def insert_trade(
                     symbol: str,
@@ -712,7 +711,10 @@ class IBKRSyncManager:
                     if value_number is None:
                         span_end("on_account_summary", span, "invalid value")
                         return
-                    update_account_summary(tag, value_number)
+                    column = update_account_summary(tag, value_number)
+                    if column:
+                        summary_snapshot = self._cache.snapshot_account_summary()
+                        flush_account_summary(summary_snapshot, {column})
                     span_end("on_account_summary", span, f"tag={tag} value={value_number}")
 
                 def subscribe_pnl(con_id: int | None) -> None:

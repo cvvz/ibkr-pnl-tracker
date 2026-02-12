@@ -44,7 +44,7 @@ def load_settings() -> Settings:
     ib_reconnect_min_delay = int(os.getenv("IBKR_RECONNECT_MIN_DELAY", "3"))
     ib_reconnect_max_delay = int(os.getenv("IBKR_RECONNECT_MAX_DELAY", "60"))
     ib_keepalive_seconds = int(os.getenv("IBKR_KEEPALIVE_SECONDS", "15"))
-    ib_cache_flush_seconds = float(os.getenv("IBKR_CACHE_FLUSH_SECONDS", "3"))
+    ib_cache_flush_seconds = float(os.getenv("IBKR_CACHE_FLUSH_SECONDS", "18"))
     ws_update_interval_seconds = float(os.getenv("IBKR_WS_UPDATE_INTERVAL_SECONDS", "0.5"))
     gateway_deployment = os.getenv("IBKR_GATEWAY_DEPLOYMENT", "ib-gateway")
     gateway_namespace = os.getenv("IBKR_GATEWAY_NAMESPACE", "default")
