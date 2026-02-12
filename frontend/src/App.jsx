@@ -35,7 +35,7 @@ function App() {
   const [accountSummary, setAccountSummary] = useState(null);
   const [positions, setPositions] = useState([]);
   const [historyPositions, setHistoryPositions] = useState([]);
-  const [tradeSeries, setTradeSeries] = useState([]);
+  const [dailyPnlTrendSeries, setDailyPnlTrendSeries] = useState([]);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [ibStatus, setIbStatus] = useState({
     connected: false,
@@ -73,7 +73,13 @@ function App() {
 
   useEffect(() => {
     const fetchSnapshot = async () => {
-      const [summaryRes, positionsRes, historyRes, accountSummaryRes, tradeSeriesRes] =
+    const [
+      summaryRes,
+      positionsRes,
+      historyRes,
+      accountSummaryRes,
+      dailyPnlTrendRes
+    ] =
         await Promise.all([
           fetch(`${API_BASE}/pnl/summary`),
           fetch(`${API_BASE}/positions`),
@@ -81,34 +87,34 @@ function App() {
           fetch(`${API_BASE}/account/summary`),
           fetch(`${API_BASE}/pnl/trade-cumulative`)
         ]);
-      setSummary(await summaryRes.json());
-      setPositions(await positionsRes.json());
-      setHistoryPositions(await historyRes.json());
-      setAccountSummary(await accountSummaryRes.json());
-      setTradeSeries(await tradeSeriesRes.json());
-    };
+    setSummary(await summaryRes.json());
+    setPositions(await positionsRes.json());
+    setHistoryPositions(await historyRes.json());
+    setAccountSummary(await accountSummaryRes.json());
+    setDailyPnlTrendSeries(await dailyPnlTrendRes.json());
+  };
 
     fetchSnapshot().catch(() => setWsStatus("error"));
   }, []);
 
   useEffect(() => {
     let active = true;
-    const fetchTradeSeries = async () => {
+    const fetchDailyPnlTrendSeries = async () => {
       try {
         const response = await fetch(`${API_BASE}/pnl/trade-cumulative`);
         const payload = await response.json();
         if (active) {
-          setTradeSeries(payload);
+          setDailyPnlTrendSeries(payload);
         }
       } catch (error) {
         if (active) {
-          setTradeSeries([]);
+          setDailyPnlTrendSeries([]);
         }
       }
     };
 
-    fetchTradeSeries();
-    const interval = setInterval(fetchTradeSeries, 15000);
+    fetchDailyPnlTrendSeries();
+    const interval = setInterval(fetchDailyPnlTrendSeries, 15000);
 
     return () => {
       active = false;
@@ -239,7 +245,7 @@ function App() {
     ? "error"
     : "disconnected";
 
-  const tradeCumulative = useMemo(() => {
+  const accountTotalPnl = useMemo(() => {
     if (positions.length === 0 && historyPositions.length === 0) {
       return null;
     }
@@ -254,18 +260,18 @@ function App() {
     return currentTotal + historyTotal;
   }, [positions, historyPositions]);
 
-  const tradeChart = useMemo(() => {
-    if (!tradeSeries || tradeSeries.length === 0) {
+  const dailyPnlTrendChart = useMemo(() => {
+    if (!dailyPnlTrendSeries || dailyPnlTrendSeries.length === 0) {
       return null;
     }
     const width = 640;
     const height = 220;
     const padding = 32;
-    const lastIndex = tradeSeries.length - 1;
-    const values = tradeSeries.map((item, index) => {
+    const lastIndex = dailyPnlTrendSeries.length - 1;
+    const values = dailyPnlTrendSeries.map((item, index) => {
       const value = item.cumulative_pnl ?? 0;
-      if (tradeCumulative != null && index === lastIndex) {
-        return tradeCumulative;
+      if (accountTotalPnl != null && index === lastIndex) {
+        return accountTotalPnl;
       }
       return value;
     });
@@ -274,8 +280,8 @@ function App() {
     const maxValue = Math.max(...allValues);
     const range = maxValue - minValue || 1;
     const stepX =
-      tradeSeries.length > 1
-        ? (width - padding * 2) / (tradeSeries.length - 1)
+      dailyPnlTrendSeries.length > 1
+        ? (width - padding * 2) / (dailyPnlTrendSeries.length - 1)
         : 0;
     const toPoint = (value, index) => {
       const x = padding + index * stepX;
@@ -287,11 +293,11 @@ function App() {
     };
     const points = values.map(toPoint).join(" ");
     const labels = {
-      start: tradeSeries[0]?.trade_date,
+      start: dailyPnlTrendSeries[0]?.trade_date,
       mid:
-        tradeSeries[Math.floor((tradeSeries.length - 1) / 2)]?.trade_date ??
-        tradeSeries[0]?.trade_date,
-      end: tradeSeries[tradeSeries.length - 1]?.trade_date
+        dailyPnlTrendSeries[Math.floor((dailyPnlTrendSeries.length - 1) / 2)]
+          ?.trade_date ?? dailyPnlTrendSeries[0]?.trade_date,
+      end: dailyPnlTrendSeries[dailyPnlTrendSeries.length - 1]?.trade_date
     };
     return {
       width,
@@ -301,7 +307,7 @@ function App() {
       points,
       labels
     };
-  }, [tradeSeries, tradeCumulative]);
+  }, [dailyPnlTrendSeries, accountTotalPnl]);
 
   const healthMetrics = useMemo(() => {
     if (!accountSummary) {
@@ -517,24 +523,24 @@ function App() {
             </div>
             <div
               className={`summary-card ${
-                tradeCumulative != null
-                  ? tradeCumulative >= 0
+                accountTotalPnl != null
+                  ? accountTotalPnl >= 0
                     ? "summary-pos"
                     : "summary-neg"
                   : "summary-pos"
               }`}
             >
-              <p>Cumulative PnL</p>
+              <p>Total PnL</p>
               <strong
                 className={
-                  tradeCumulative != null
-                    ? tradeCumulative >= 0
+                  accountTotalPnl != null
+                    ? accountTotalPnl >= 0
                       ? "pos"
                       : "neg"
                     : ""
                 }
               >
-                {tradeCumulative != null ? money.format(tradeCumulative) : "--"}
+                {accountTotalPnl != null ? money.format(accountTotalPnl) : "--"}
               </strong>
               <div className="summary-sub">
                 Current positions total + historical realized
@@ -546,16 +552,16 @@ function App() {
         <section className="panel-grid">
           <div className="panel">
             <div className="panel-header">
-              <h2>Daily PnL Trend</h2>
+              <h2>Cumulative PnL (Trend)</h2>
               <span className="tag">Trade PnL</span>
             </div>
-            {tradeChart ? (
+            {dailyPnlTrendChart ? (
               <div className="chart">
                 <svg
                   className="pnl-chart"
-                  viewBox={`0 0 ${tradeChart.width} ${tradeChart.height}`}
+                  viewBox={`0 0 ${dailyPnlTrendChart.width} ${dailyPnlTrendChart.height}`}
                   role="img"
-                  aria-label="Trade cumulative PnL curve"
+                  aria-label="Cumulative PnL trend curve"
                 >
                   <defs>
                     <linearGradient id="tradeLine" x1="0" y1="0" x2="1" y2="0">
@@ -565,16 +571,16 @@ function App() {
                   </defs>
                   <polyline
                     className="pnl-line cumulative"
-                    points={tradeChart.points}
+                    points={dailyPnlTrendChart.points}
                     fill="none"
                     stroke="url(#tradeLine)"
                     strokeWidth="3"
                   />
                 </svg>
                 <div className="chart-labels">
-                  <span>{tradeChart.labels.start ?? "--"}</span>
-                  <span>{tradeChart.labels.mid ?? "--"}</span>
-                  <span>{tradeChart.labels.end ?? "--"}</span>
+                  <span>{dailyPnlTrendChart.labels.start ?? "--"}</span>
+                  <span>{dailyPnlTrendChart.labels.mid ?? "--"}</span>
+                  <span>{dailyPnlTrendChart.labels.end ?? "--"}</span>
                 </div>
               </div>
             ) : (
