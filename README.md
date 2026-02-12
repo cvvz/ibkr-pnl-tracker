@@ -124,7 +124,7 @@ VITE_API_BASE=http://localhost:8000
 
 如需 Docker 方式，可用仓库里的镜像构建：
 ```powershell
-cd ib-gateway
+cd ~/workspace/ibkr-pnl-tracker/ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
 docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
@@ -142,11 +142,11 @@ docker run -d --name ibkr-postgres --network ibkr-net `
 
 ### 3) 后端（Docker）
 ```powershell
-cd backend
-# docker build -t ibkr-backend:local \
-#  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-#  .
-docker build -t ibkr-backend:local .
+cd ~/workspace/ibkr-pnl-tracker/backend
+docker build -t ibkr-backend:local \
+ --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+ .
+# docker build -t ibkr-backend:local .
 
 # %2F 是 '/' 的 URL 编码
 docker run -d --name ibkr-backend \
@@ -183,14 +183,14 @@ docker run -d --name ibkr-backend --network ibkr-net -p 8000:8000 `
 ### 4) 前端（Docker）
 本地访问：
 ```powershell
-cd frontend
+cd ~/workspace/ibkr-pnl-tracker/frontend
 docker build -t ibkr-frontend:local --build-arg VITE_API_BASE=http://127.0.0.1:8000 .
 docker run -d --name ibkr-frontend -p 8080:80 ibkr-frontend:local
 ```
 
 局域网访问：
 ```powershell
-cd frontend
+cd ~/workspace/ibkr-pnl-tracker/frontend
 docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://192.168.50.119:8000 .
 docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
 ```
