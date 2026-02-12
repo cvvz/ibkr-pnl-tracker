@@ -18,9 +18,32 @@ const percentFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1
 });
 
+const beijingFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false
+});
+
 const formatDate = (value) => {
   if (!value) return "--";
-  return value.split("T")[0] ?? value;
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    return text;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+  const parts = beijingFormatter.formatToParts(parsed);
+  const pick = (type) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick(
+    "minute"
+  )}:${pick("second")}`;
 };
 
 const buildIdempotencyKey = () => {
@@ -245,20 +268,7 @@ function App() {
     ? "error"
     : "disconnected";
 
-  const accountTotalPnl = useMemo(() => {
-    if (positions.length === 0 && historyPositions.length === 0) {
-      return null;
-    }
-    const currentTotal = positions.reduce(
-      (sum, item) => sum + (item.total_pnl ?? 0),
-      0
-    );
-    const historyTotal = historyPositions.reduce(
-      (sum, item) => sum + (item.realized_pnl ?? 0),
-      0
-    );
-    return currentTotal + historyTotal;
-  }, [positions, historyPositions]);
+  const accountTotalPnl = summary?.total_pnl ?? null;
 
   const dailyPnlTrendChart = useMemo(() => {
     if (!dailyPnlTrendSeries || dailyPnlTrendSeries.length === 0) {

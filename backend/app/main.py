@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .config import load_settings
+from .cache import CacheStore
 from .db import get_connection, init_db, upsert_account
 from .ibkr_sync import IBKRSyncManager, OrderPayload
 from .k8s import restart_deployment
@@ -104,6 +105,11 @@ def _get_default_account(conn: psycopg.Connection) -> Dict[str, Any] | None:
     return None
 
 
+def _cache_ready() -> bool:
+    cache = getattr(app.state, "cache", None)
+    return bool(cache and cache.is_initialized())
+
+
 class OrderRequest(BaseModel):
     symbol: str = Field(..., min_length=1)
     qty: float = Field(..., gt=0)
@@ -120,11 +126,15 @@ class OrderRequest(BaseModel):
 @app.on_event("startup")
 async def startup() -> None:
     init_db(settings.database_url)
-    app.state.sync_manager = IBKRSyncManager(settings)
+    app.state.cache = CacheStore()
+    app.state.sync_manager = IBKRSyncManager(settings, cache=app.state.cache)
     app.state.order_idempotency = {}
     app.state.order_idempotency_lock = threading.Lock()
     with get_connection(settings.database_url) as conn:
         upsert_account(conn, "LOCAL", settings.base_currency)
+        account = _get_default_account(conn)
+        if account:
+            app.state.cache.load_from_db(conn, account["id"], account["base_currency"])
     if settings.ib_auto_sync:
         app.state.sync_manager.start()
 
@@ -272,6 +282,8 @@ def place_order(
 
 @app.get("/positions")
 def positions() -> List[Dict[str, Any]]:
+    if _cache_ready():
+        return app.state.cache.snapshot_positions()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -281,6 +293,8 @@ def positions() -> List[Dict[str, Any]]:
 
 @app.get("/positions/history")
 def positions_history() -> List[Dict[str, Any]]:
+    if _cache_ready():
+        return app.state.cache.snapshot_history()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -290,6 +304,8 @@ def positions_history() -> List[Dict[str, Any]]:
 
 @app.get("/pnl/summary")
 def pnl_summary() -> Dict[str, Any]:
+    if _cache_ready():
+        return app.state.cache.snapshot_account_pnl()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -307,6 +323,8 @@ def pnl_summary() -> Dict[str, Any]:
 
 @app.get("/pnl/daily")
 def pnl_daily() -> List[Dict[str, Any]]:
+    if _cache_ready():
+        return app.state.cache.snapshot_daily_pnl()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -316,6 +334,8 @@ def pnl_daily() -> List[Dict[str, Any]]:
 
 @app.get("/account/summary")
 def account_summary() -> Dict[str, Any]:
+    if _cache_ready():
+        return app.state.cache.snapshot_account_summary()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -337,6 +357,8 @@ def account_summary() -> Dict[str, Any]:
 
 @app.get("/pnl/trade-cumulative")
 def trade_cumulative() -> List[Dict[str, Any]]:
+    if _cache_ready():
+        return app.state.cache.snapshot_trade_cumulative()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
@@ -412,46 +434,55 @@ async def updates(ws: WebSocket) -> None:
     await ws.accept()
     try:
         while True:
-            with get_connection(settings.database_url) as conn:
-                account = _get_default_account(conn)
-                if not account:
-                    payload = {
-                        "summary": {
-                            "account_id": None,
-                            "base_currency": settings.base_currency,
-                            "realized_pnl": 0.0,
-                            "unrealized_pnl": 0.0,
-                            "daily_pnl": 0.0,
-                            "total_pnl": 0.0,
-                            "as_of": _utc_now(),
-                        },
-                        "positions": [],
-                        "history": [],
-                        "daily_pnl": [],
-                        "account_summary": {
-                            "account_id": None,
-                            "base_currency": settings.base_currency,
-                            "net_liquidation": None,
-                            "total_cash_value": None,
-                            "available_funds": None,
-                            "excess_liquidity": None,
-                            "init_margin_req": None,
-                            "maint_margin_req": None,
-                            "gross_position_value": None,
-                            "short_market_value": None,
-                            "as_of": _utc_now(),
-                        },
-                    }
-                else:
-                    payload = {
-                        "summary": get_account_summary(conn, account["id"], account["base_currency"]),
-                        "positions": get_positions(conn, account["id"], account["base_currency"]),
-                        "history": get_history_positions(conn, account["id"], account["base_currency"]),
-                        "daily_pnl": get_account_daily_pnl(conn, account["id"]),
-                        "account_summary": get_account_snapshot(
-                            conn, account["id"], account["base_currency"]
-                        ),
-                    }
+            if _cache_ready():
+                payload = {
+                    "summary": app.state.cache.snapshot_account_pnl(),
+                    "positions": app.state.cache.snapshot_positions(),
+                    "history": app.state.cache.snapshot_history(),
+                    "daily_pnl": app.state.cache.snapshot_daily_pnl(),
+                    "account_summary": app.state.cache.snapshot_account_summary(),
+                }
+            else:
+                with get_connection(settings.database_url) as conn:
+                    account = _get_default_account(conn)
+                    if not account:
+                        payload = {
+                            "summary": {
+                                "account_id": None,
+                                "base_currency": settings.base_currency,
+                                "realized_pnl": 0.0,
+                                "unrealized_pnl": 0.0,
+                                "daily_pnl": 0.0,
+                                "total_pnl": 0.0,
+                                "as_of": _utc_now(),
+                            },
+                            "positions": [],
+                            "history": [],
+                            "daily_pnl": [],
+                            "account_summary": {
+                                "account_id": None,
+                                "base_currency": settings.base_currency,
+                                "net_liquidation": None,
+                                "total_cash_value": None,
+                                "available_funds": None,
+                                "excess_liquidity": None,
+                                "init_margin_req": None,
+                                "maint_margin_req": None,
+                                "gross_position_value": None,
+                                "short_market_value": None,
+                                "as_of": _utc_now(),
+                            },
+                        }
+                    else:
+                        payload = {
+                            "summary": get_account_summary(conn, account["id"], account["base_currency"]),
+                            "positions": get_positions(conn, account["id"], account["base_currency"]),
+                            "history": get_history_positions(conn, account["id"], account["base_currency"]),
+                            "daily_pnl": get_account_daily_pnl(conn, account["id"]),
+                            "account_summary": get_account_snapshot(
+                                conn, account["id"], account["base_currency"]
+                            ),
+                        }
             await ws.send_json(payload)
             await asyncio.sleep(1)
     except WebSocketDisconnect:

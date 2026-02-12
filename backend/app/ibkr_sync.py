@@ -16,6 +16,7 @@ import psycopg
 from ib_insync import IB, LimitOrder, MarketOrder, Position, Stock
 
 from .config import Settings
+from .cache import CacheStore
 from .db import get_connection, upsert_account
 
 logger = logging.getLogger("uvicorn.error")
@@ -37,7 +38,6 @@ _ACCOUNT_SUMMARY_TAGS = {
     "GrossPositionValue": "gross_position_value",
     "ShortMarketValue": "short_market_value",
 }
-PNL_SINGLE_FLUSH_INTERVAL = 1.0
 
 
 def _trade_date_et(now: dt.datetime | None = None) -> str:
@@ -202,8 +202,9 @@ class OrderResult:
 
 
 class IBKRSyncManager:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, cache: CacheStore | None = None) -> None:
         self.settings = settings
+        self._cache = cache or CacheStore()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._status = SyncStatus(running=False)
@@ -285,6 +286,9 @@ class IBKRSyncManager:
                 conn = get_connection(self.settings.database_url)
                 account = ib.managedAccounts()[0] if ib.managedAccounts() else "LOCAL"
                 account_id = upsert_account(conn, account, self.settings.base_currency)
+                self._cache.set_account(account_id, self.settings.base_currency)
+                if not self._cache.is_initialized():
+                    self._cache.load_from_db(conn, account_id, self.settings.base_currency)
 
                 pending_commission_reports: dict[str, tuple[float, float]] = {}
                 pnl_req_by_con: dict[int, int] = {}
@@ -299,6 +303,7 @@ class IBKRSyncManager:
                     if conn is None or conn.closed:
                         conn = get_connection(self.settings.database_url)
                         account_id = upsert_account(conn, account, self.settings.base_currency)
+                        self._cache.set_account(account_id, self.settings.base_currency)
                     else:
                         try:
                             if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
@@ -365,6 +370,12 @@ class IBKRSyncManager:
                             (commission, realized, row["id"]),
                         )
                         conn.commit()
+                        position_key = (
+                            row["symbol"],
+                            row["exchange"] or "",
+                            row["currency"],
+                        )
+                        self._cache.record_exec_realized(exec_id, position_key, realized)
                         maybe_update_history_from_trade(
                             row["symbol"],
                             row["exchange"],
@@ -437,6 +448,9 @@ class IBKRSyncManager:
                         (new_close, realized_total, _utc_now(), history_row["id"]),
                     )
                     conn.commit()
+                    self._cache.update_history_realized(
+                        int(history_row["id"]), new_close, realized_total
+                    )
 
                 def maybe_update_open_time(
                     symbol: str, currency: str, trade_time: str
@@ -458,102 +472,18 @@ class IBKRSyncManager:
                             (trade_time, _utc_now(), row["id"]),
                         )
                         conn.commit()
+                        self._cache.update_open_time(symbol, currency, trade_time)
 
                 def update_account_daily_pnl(daily_value: float) -> None:
-                    span = span_start("db.update_account_daily_pnl", f"daily={daily_value}")
-                    ensure_conn()
                     trade_date = _trade_date_et()
-                    conn.execute(
-                        """
-                        INSERT INTO account_daily_pnl
-                            (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT(account_id, trade_date) DO UPDATE
-                        SET daily_pnl = excluded.daily_pnl,
-                            updated_at = excluded.updated_at
-                        """,
-                        (account_id, trade_date, daily_value, 0.0, _utc_now()),
-                    )
-                    rows = conn.execute(
-                        """
-                        SELECT id, daily_pnl
-                        FROM account_daily_pnl
-                        WHERE account_id = %s
-                        ORDER BY trade_date
-                        """,
-                        (account_id,),
-                    ).fetchall()
-                    cumulative = 0.0
-                    updates: list[tuple[float, str, int]] = []
-                    now = _utc_now()
-                    for row in rows:
-                        cumulative += float(row["daily_pnl"])
-                        updates.append((cumulative, now, int(row["id"])))
-                    if updates:
-                        with conn.cursor() as cur:
-                            cur.executemany(
-                                "UPDATE account_daily_pnl SET cumulative_pnl = %s, updated_at = %s WHERE id = %s",
-                                updates,
-                            )
-                    span_end("db.update_account_daily_pnl", span, f"daily={daily_value}")
-
-                def update_account_pnl(realized_value: float, unrealized_value: float, daily_value: float) -> None:
-                    span = span_start(
-                        "db.update_account_pnl",
-                        f"realized={realized_value} unrealized={unrealized_value} daily={daily_value}",
-                    )
-                    ensure_conn()
-                    total_value = realized_value + unrealized_value
-                    conn.execute(
-                        """
-                        INSERT INTO account_pnl
-                            (account_id, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT(account_id) DO UPDATE
-                        SET realized_pnl = excluded.realized_pnl,
-                            unrealized_pnl = excluded.unrealized_pnl,
-                            daily_pnl = excluded.daily_pnl,
-                            total_pnl = excluded.total_pnl,
-                            updated_at = excluded.updated_at
-                        """,
-                        (
-                            account_id,
-                            realized_value,
-                            unrealized_value,
-                            daily_value,
-                            total_value,
-                            _utc_now(),
-                        ),
-                    )
-                    update_account_daily_pnl(daily_value)
-                    conn.commit()
-                    mark_update()
-                    span_end(
-                        "db.update_account_pnl",
-                        span,
-                        f"realized={realized_value} unrealized={unrealized_value} daily={daily_value}",
-                    )
+                    self._cache.update_daily_pnl(trade_date, daily_value)
 
                 def update_account_summary(tag: str, value: float) -> None:
                     column = _ACCOUNT_SUMMARY_TAGS.get(tag)
                     if not column:
                         return
-                    span = span_start("db.update_account_summary", f"tag={tag} value={value}")
-                    ensure_conn()
-                    conn.execute(
-                        f"""
-                        INSERT INTO account_summary
-                            (account_id, {column}, updated_at)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT(account_id) DO UPDATE
-                        SET {column} = excluded.{column},
-                            updated_at = excluded.updated_at
-                        """,
-                        (account_id, value, _utc_now()),
-                    )
-                    conn.commit()
+                    self._cache.update_account_summary(column, value)
                     mark_update()
-                    span_end("db.update_account_summary", span, f"tag={tag} value={value}")
 
                 def insert_trade(
                     symbol: str,
@@ -668,6 +598,13 @@ class IBKRSyncManager:
                         exec_id,
                         perm_id,
                     )
+                    if exec_id:
+                        position_key = (
+                            contract.symbol,
+                            trade_exchange,
+                            contract.currency,
+                        )
+                        self._cache.record_exec_realized(exec_id, position_key, realized)
                     span_end("on_exec", span, f"symbol={contract.symbol} exec_id={exec_id}")
 
                 def on_commission(*args):
@@ -718,7 +655,8 @@ class IBKRSyncManager:
                     daily_value = coerce_float(daily)
                     if daily_value is None:
                         daily_value = 0.0
-                    update_account_pnl(realized_value, unrealized_value, daily_value)
+                    update_account_daily_pnl(daily_value)
+                    mark_update()
                     span_end(
                         "on_pnl",
                         span,
@@ -819,6 +757,20 @@ class IBKRSyncManager:
                     )
                     conn.execute("DELETE FROM positions WHERE id = %s", (row["id"],))
                     conn.commit()
+                    self._cache.add_history(
+                        position_id=int(row["id"]),
+                        symbol=row["symbol"],
+                        exchange=row["exchange"] or "",
+                        currency=row["currency"],
+                        open_time=row["open_time"],
+                        close_time=close_time,
+                        realized_pnl=realized,
+                    )
+                    self._cache.remove_position(
+                        row["symbol"],
+                        row["exchange"] or "",
+                        row["currency"],
+                    )
                     unsubscribe_pnl(row["con_id"])
                     mark_update()
                     span_end(
@@ -866,7 +818,7 @@ class IBKRSyncManager:
 
                         row = conn.execute(
                             """
-                            SELECT id, open_time
+                            SELECT id, open_time, unrealized_pnl, daily_pnl
                             FROM positions
                             WHERE account_id = %s AND symbol = %s AND exchange = %s AND currency = %s
                             """,
@@ -878,7 +830,9 @@ class IBKRSyncManager:
                             open_time = _get_first_trade_time(
                                 conn, account_id, symbol, currency, after_time=last_close
                             ) or _utc_now()
-                        conn.execute(
+                        unrealized_value = float(row["unrealized_pnl"]) if row else 0.0
+                        daily_value = float(row["daily_pnl"]) if row else 0.0
+                        new_row = conn.execute(
                             """
                             INSERT INTO positions
                                 (account_id, symbol, exchange, currency, qty, avg_cost, total_cost, realized_pnl,
@@ -891,6 +845,7 @@ class IBKRSyncManager:
                                 con_id = excluded.con_id,
                                 open_time = COALESCE(positions.open_time, excluded.open_time),
                                 updated_at = excluded.updated_at
+                            RETURNING id
                             """,
                             (
                                 account_id,
@@ -901,14 +856,25 @@ class IBKRSyncManager:
                                 avg_cost_value,
                                 qty * avg_cost_value,
                                 0.0,
-                                0.0,
-                                0.0,
+                                unrealized_value,
+                                daily_value,
                                 contract.conId,
                                 open_time,
                                 _utc_now(),
                             ),
-                        )
+                        ).fetchone()
                         conn.commit()
+                        position_id = int(new_row["id"]) if new_row else None
+                        self._cache.update_position(
+                            position_id=position_id,
+                            symbol=symbol,
+                            exchange=exchange,
+                            currency=currency,
+                            qty=qty,
+                            avg_cost=avg_cost_value,
+                            open_time=open_time,
+                            con_id=contract.conId,
+                        )
                         subscribe_pnl(contract.conId)
                         mark_update()
                     finally:
@@ -1102,6 +1068,9 @@ class IBKRSyncManager:
                             return
                     last_pnl_single[con_id] = (daily_value, unrealized_value)
                     pending_pnl_single[con_id] = (unrealized_value, daily_value)
+                    self._cache.update_position_pnl_by_con_id(
+                        con_id, unrealized_value, daily_value
+                    )
 
                 def flush_pnl_single_updates() -> None:
                     if not pending_pnl_single:
@@ -1148,6 +1117,62 @@ class IBKRSyncManager:
                     finally:
                         span_end("flush_pnl_single", span, f"count={count}")
 
+                def flush_account_cache() -> None:
+                    account_summary, summary_fields, daily_payload = self._cache.collect_flush_payload()
+                    if not account_summary and not daily_payload:
+                        return
+                    span = span_start("flush_account_cache")
+                    try:
+                        ensure_conn()
+                        now = _utc_now()
+                        if daily_payload and account_id is not None:
+                            conn.execute(
+                                """
+                                INSERT INTO account_daily_pnl
+                                    (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON CONFLICT(account_id, trade_date) DO UPDATE
+                                SET daily_pnl = excluded.daily_pnl,
+                                    cumulative_pnl = excluded.cumulative_pnl,
+                                    updated_at = excluded.updated_at
+                                """,
+                                (
+                                    account_id,
+                                    daily_payload["trade_date"],
+                                    float(daily_payload["daily_pnl"]),
+                                    float(daily_payload["cumulative_pnl"]),
+                                    now,
+                                ),
+                            )
+                        if account_summary and summary_fields and account_id is not None:
+                            columns = sorted(summary_fields)
+                            placeholders = ", ".join(["%s"] * (len(columns) + 2))
+                            insert_cols = ", ".join(["account_id", *columns, "updated_at"])
+                            updates = ", ".join(
+                                [f"{column} = excluded.{column}" for column in columns]
+                                + ["updated_at = excluded.updated_at"]
+                            )
+                            values = [account_id]
+                            values.extend([account_summary.get(column) for column in columns])
+                            values.append(now)
+                            conn.execute(
+                                f"""
+                                INSERT INTO account_summary ({insert_cols})
+                                VALUES ({placeholders})
+                                ON CONFLICT(account_id) DO UPDATE
+                                SET {updates}
+                                """,
+                                values,
+                            )
+                        conn.commit()
+                        self._cache.clear_dirty(
+                            account_summary_fields=summary_fields,
+                            daily_pnl=bool(daily_payload),
+                        )
+                        mark_update()
+                    finally:
+                        span_end("flush_account_cache", span)
+
                 ib.execDetailsEvent += on_exec
                 ib.commissionReportEvent += on_commission
                 ib.positionEvent += on_position
@@ -1167,7 +1192,7 @@ class IBKRSyncManager:
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
                 last_queue_log = 0.0
-                last_pnl_single_flush = time.time()
+                last_cache_flush = time.time()
 
                 logger.info("enter order loop")
                 while not self._stop_event.is_set() and ib.isConnected():
@@ -1178,9 +1203,10 @@ class IBKRSyncManager:
                     if time.time() - last_keepalive >= self.settings.ib_keepalive_seconds:
                         ib.reqCurrentTime()
                         last_keepalive = time.time()
-                    if time.time() - last_pnl_single_flush >= PNL_SINGLE_FLUSH_INTERVAL:
+                    if time.time() - last_cache_flush >= self.settings.ib_cache_flush_seconds:
                         flush_pnl_single_updates()
-                        last_pnl_single_flush = time.time()
+                        flush_account_cache()
+                        last_cache_flush = time.time()
                     now = time.time()
                     if now - last_queue_log >= 5:
                         last_queue_log = now

@@ -123,32 +123,46 @@ def get_history_positions(conn: psycopg.Connection, account_id: int, base_curren
 
 
 def get_account_summary(conn: psycopg.Connection, account_id: int, base_currency: str) -> Dict:
-    row = conn.execute(
+    realized_row = conn.execute(
         """
-        SELECT realized_pnl, unrealized_pnl, daily_pnl, total_pnl, updated_at
-        FROM account_pnl
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM trades
         WHERE account_id = %s
         """,
         (account_id,),
     ).fetchone()
-    if row:
-        return {
-            "account_id": account_id,
-            "base_currency": base_currency,
-            "realized_pnl": float(row["realized_pnl"]),
-            "unrealized_pnl": float(row["unrealized_pnl"]),
-            "daily_pnl": float(row["daily_pnl"]),
-            "total_pnl": float(row["total_pnl"]),
-            "as_of": row["updated_at"],
-        }
+    realized_total = float(realized_row["total"]) if realized_row else 0.0
 
+    unrealized_row = conn.execute(
+        """
+        SELECT COALESCE(SUM(unrealized_pnl), 0) AS total
+        FROM positions
+        WHERE account_id = %s
+        """,
+        (account_id,),
+    ).fetchone()
+    unrealized_total = float(unrealized_row["total"]) if unrealized_row else 0.0
+
+    daily_row = conn.execute(
+        """
+        SELECT daily_pnl
+        FROM account_daily_pnl
+        WHERE account_id = %s
+        ORDER BY trade_date DESC
+        LIMIT 1
+        """,
+        (account_id,),
+    ).fetchone()
+    daily_value = float(daily_row["daily_pnl"]) if daily_row else 0.0
+
+    total_value = realized_total + unrealized_total
     return {
         "account_id": account_id,
         "base_currency": base_currency,
-        "realized_pnl": 0.0,
-        "unrealized_pnl": 0.0,
-        "daily_pnl": 0.0,
-        "total_pnl": 0.0,
+        "realized_pnl": realized_total,
+        "unrealized_pnl": unrealized_total,
+        "daily_pnl": daily_value,
+        "total_pnl": total_value,
         "as_of": _utc_now(),
     }
 
