@@ -5,9 +5,23 @@ from typing import Dict, List
 
 import psycopg
 
+_BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
+
 
 def _utc_now() -> str:
     return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
+
+
+def _format_bj_time(value: str | None) -> str | None:
+    if not value:
+        return value
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    return parsed.astimezone(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _sum_realized(
@@ -47,12 +61,13 @@ def get_positions(conn: psycopg.Connection, account_id: int, base_currency: str)
 
     positions: List[Dict] = []
     for row in rows:
+        open_time = row["open_time"]
         realized = _sum_realized(
             conn,
             account_id,
             row["symbol"],
             row["currency"],
-            start_time=row["open_time"],
+            start_time=open_time,
         )
         unrealized = float(row["unrealized_pnl"])
         daily = float(row["daily_pnl"])
@@ -66,7 +81,7 @@ def get_positions(conn: psycopg.Connection, account_id: int, base_currency: str)
                 "unrealized_pnl": unrealized,
                 "total_pnl": realized + unrealized,
                 "daily_pnl": daily,
-                "open_time": row["open_time"],
+                "open_time": _format_bj_time(open_time),
             }
         )
     return positions
@@ -85,20 +100,22 @@ def get_history_positions(conn: psycopg.Connection, account_id: int, base_curren
 
     history: List[Dict] = []
     for row in rows:
+        open_time = row["open_time"]
+        close_time = row["close_time"]
         realized = _sum_realized(
             conn,
             account_id,
             row["symbol"],
             row["currency"],
-            start_time=row["open_time"],
-            end_time=row["close_time"],
+            start_time=open_time,
+            end_time=close_time,
         )
         history.append(
             {
                 "id": row["id"],
                 "symbol": row["symbol"],
-                "open_time": row["open_time"],
-                "close_time": row["close_time"],
+                "open_time": _format_bj_time(open_time),
+                "close_time": _format_bj_time(close_time),
                 "realized_pnl": realized,
             }
         )
