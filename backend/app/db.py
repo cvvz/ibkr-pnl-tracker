@@ -80,12 +80,11 @@ SCHEMA_STATEMENTS: Iterable[str] = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS account_daily_pnl (
+    CREATE TABLE IF NOT EXISTS account_total_pnl (
         id SERIAL PRIMARY KEY,
         account_id INTEGER NOT NULL REFERENCES accounts(id),
         trade_date TEXT NOT NULL,
-        daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-        cumulative_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+        total_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         UNIQUE(account_id, trade_date)
     )
@@ -102,6 +101,7 @@ def init_db(database_url: str) -> None:
         for stmt in SCHEMA_STATEMENTS:
             conn.execute(stmt)
         conn.execute("DROP TABLE IF EXISTS account_pnl")
+        conn.execute("DROP TABLE IF EXISTS account_daily_pnl")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS position_id INTEGER")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS perm_id TEXT")
         conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS open_time TEXT")

@@ -38,6 +38,7 @@ _ACCOUNT_SUMMARY_TAGS = {
     "GrossPositionValue": "gross_position_value",
     "ShortMarketValue": "short_market_value",
 }
+_DAILY_PNL_MAX = 1e306
 
 
 def _trade_date_et(now: dt.datetime | None = None) -> str:
@@ -496,9 +497,8 @@ class IBKRSyncManager:
                     )
                     conn.commit()
 
-                def update_account_daily_pnl(daily_value: float) -> None:
-                    trade_date = _trade_date_et()
-                    self._cache.update_daily_pnl(trade_date, daily_value)
+                def update_account_daily_pnl_value(daily_value: float) -> None:
+                    self._cache.update_current_daily_pnl(daily_value)
 
                 def update_account_summary(tag: str, value: float) -> str | None:
                     column = _ACCOUNT_SUMMARY_TAGS.get(tag)
@@ -679,7 +679,10 @@ class IBKRSyncManager:
                     daily_value = coerce_float(daily)
                     if daily_value is None:
                         daily_value = 0.0
-                    update_account_daily_pnl(daily_value)
+                    if abs(daily_value) >= _DAILY_PNL_MAX:
+                        span_end("on_pnl", span, "daily_too_large")
+                        return
+                    update_account_daily_pnl_value(daily_value)
                     mark_update()
                     span_end(
                         "on_pnl",
@@ -870,6 +873,8 @@ class IBKRSyncManager:
                             ) or _utc_now()
                         unrealized_value = float(row["unrealized_pnl"]) if row else 0.0
                         daily_value = float(row["daily_pnl"]) if row else 0.0
+                        if abs(daily_value) >= _DAILY_PNL_MAX:
+                            daily_value = 0.0
                         new_row = conn.execute(
                             """
                             INSERT INTO positions
@@ -1099,6 +1104,8 @@ class IBKRSyncManager:
                             daily_value = None
                         if daily_value is not None and not math.isfinite(daily_value):
                             daily_value = None
+                        if daily_value is not None and abs(daily_value) >= _DAILY_PNL_MAX:
+                            daily_value = None
                     last_entry = last_pnl_single.get(con_id)
                     if last_entry:
                         last_daily, last_unrealized = last_entry
@@ -1155,36 +1162,33 @@ class IBKRSyncManager:
                     finally:
                         span_end("flush_pnl_single", span, f"count={count}")
 
-                def flush_account_daily_pnl(daily_payload: dict[str, float] | None) -> None:
-                    if not daily_payload or account_id is None:
+                def flush_account_total_pnl(trade_date: str, total_pnl: float) -> None:
+                    if account_id is None:
                         return
-                    span = span_start("flush_account_daily_pnl")
+                    span = span_start("flush_account_total_pnl")
                     try:
                         ensure_conn()
                         now = _utc_now()
                         conn.execute(
                             """
-                            INSERT INTO account_daily_pnl
-                                (account_id, trade_date, daily_pnl, cumulative_pnl, updated_at)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO account_total_pnl
+                                (account_id, trade_date, total_pnl, updated_at)
+                            VALUES (%s, %s, %s, %s)
                             ON CONFLICT(account_id, trade_date) DO UPDATE
-                            SET daily_pnl = excluded.daily_pnl,
-                                cumulative_pnl = excluded.cumulative_pnl,
+                            SET total_pnl = excluded.total_pnl,
                                 updated_at = excluded.updated_at
                             """,
                             (
                                 account_id,
-                                daily_payload["trade_date"],
-                                float(daily_payload["daily_pnl"]),
-                                float(daily_payload["cumulative_pnl"]),
+                                trade_date,
+                                float(total_pnl),
                                 now,
                             ),
                         )
                         conn.commit()
-                        self._cache.clear_dirty(daily_pnl=True)
                         mark_update()
                     finally:
-                        span_end("flush_account_daily_pnl", span)
+                        span_end("flush_account_total_pnl", span)
 
                 def flush_account_summary(
                     account_summary: dict[str, float] | None, summary_fields: set[str]
@@ -1241,6 +1245,12 @@ class IBKRSyncManager:
                 last_keepalive = time.time()
                 last_queue_log = 0.0
                 last_cache_flush = time.time()
+                last_total_pnl_flush = time.time()
+                last_total_pnl_date = _trade_date_et()
+                initial_snapshot = self._cache.snapshot_account_pnl()
+                initial_total = float(initial_snapshot.get("total_pnl", 0.0))
+                self._cache.update_total_pnl(last_total_pnl_date, initial_total)
+                flush_account_total_pnl(last_total_pnl_date, initial_total)
 
                 logger.info("enter order loop")
                 while not self._stop_event.is_set() and ib.isConnected():
@@ -1253,12 +1263,25 @@ class IBKRSyncManager:
                         last_keepalive = time.time()
                     if time.time() - last_cache_flush >= self.settings.ib_cache_flush_seconds:
                         flush_pnl_single_updates()
-                        account_summary, summary_fields, daily_payload = (
-                            self._cache.collect_flush_payload()
-                        )
-                        flush_account_daily_pnl(daily_payload)
+                        account_summary, summary_fields = self._cache.collect_flush_payload()
                         flush_account_summary(account_summary, summary_fields)
                         last_cache_flush = time.time()
+                    current_total_date = _trade_date_et()
+                    if current_total_date != last_total_pnl_date:
+                        snapshot = self._cache.snapshot_account_pnl()
+                        total_value = float(snapshot.get("total_pnl", 0.0))
+                        self._cache.update_total_pnl(last_total_pnl_date, total_value)
+                        flush_account_total_pnl(last_total_pnl_date, total_value)
+                        last_total_pnl_date = current_total_date
+                        self._cache.update_total_pnl(last_total_pnl_date, total_value)
+                        flush_account_total_pnl(last_total_pnl_date, total_value)
+                        last_total_pnl_flush = time.time()
+                    if time.time() - last_total_pnl_flush >= 300:
+                        snapshot = self._cache.snapshot_account_pnl()
+                        total_value = float(snapshot.get("total_pnl", 0.0))
+                        self._cache.update_total_pnl(last_total_pnl_date, total_value)
+                        flush_account_total_pnl(last_total_pnl_date, total_value)
+                        last_total_pnl_flush = time.time()
                     now = time.time()
                     if now - last_queue_log >= 5:
                         last_queue_log = now

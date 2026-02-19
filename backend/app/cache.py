@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import threading
 from typing import Any
 
 import psycopg
 
 _BEIJING_TZ = dt.timezone(dt.timedelta(hours=8))
+_DAILY_PNL_MAX = 1e306
 
 
 def _utc_now() -> str:
     return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
+
+
+def _safe_daily_pnl(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    if abs(number) >= _DAILY_PNL_MAX:
+        return None
+    return number
 
 
 def _format_bj_time(value: str | None) -> str | None:
@@ -56,19 +70,18 @@ class CacheStore:
         self.account_id: int | None = None
         self.base_currency: str | None = None
         self.last_update: str | None = None
+        self.current_daily_pnl: float = 0.0
         self.realized_total: float = 0.0
         self.positions_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.positions_by_id: dict[int, tuple[str, str, str]] = {}
         self.history_by_id: dict[int, dict[str, Any]] = {}
         self.con_id_to_key: dict[int, tuple[str, str, str]] = {}
         self.account_summary: dict[str, Any] = {}
-        self.daily_pnl_by_date: dict[str, float] = {}
-        self.daily_pnl_series: list[dict[str, Any]] = []
-        self.current_trade_date: str | None = None
-        self.pending_daily_pnl_payload: dict[str, Any] | None = None
+        self.total_pnl_by_date: dict[str, float] = {}
+        self.total_pnl_series: list[dict[str, Any]] = []
+        self.current_total_pnl_date: str | None = None
         self.exec_realized_by_id: dict[str, tuple[tuple[str, str, str], float]] = {}
         self.dirty_account_summary_fields: set[str] = set()
-        self.dirty_daily_pnl = False
 
     def is_initialized(self) -> bool:
         with self._lock:
@@ -122,10 +135,10 @@ class CacheStore:
             (account_id,),
         ).fetchone()
 
-        daily_rows = conn.execute(
+        total_rows = conn.execute(
             """
-            SELECT trade_date, daily_pnl
-            FROM account_daily_pnl
+            SELECT trade_date, total_pnl
+            FROM account_total_pnl
             WHERE account_id = %s
             ORDER BY trade_date
             """,
@@ -148,7 +161,9 @@ class CacheStore:
                 open_time = row["open_time"]
                 realized = float(row["realized_pnl"])
                 unrealized = float(row["unrealized_pnl"])
-                daily = float(row["daily_pnl"])
+                daily = _safe_daily_pnl(row["daily_pnl"])
+                if daily is None:
+                    daily = 0.0
                 total = realized + unrealized
                 key = (symbol, exchange, currency)
                 position_id = int(row["id"])
@@ -204,16 +219,14 @@ class CacheStore:
             else:
                 self.account_summary = {}
 
-            self.daily_pnl_by_date = {
-                row["trade_date"]: float(row["daily_pnl"]) for row in daily_rows
+            self.total_pnl_by_date = {
+                row["trade_date"]: float(row["total_pnl"]) for row in total_rows
             }
-            self._rebuild_daily_series_locked()
-            if self.daily_pnl_by_date:
-                self.current_trade_date = max(self.daily_pnl_by_date.keys())
+            self._rebuild_total_pnl_series_locked()
+            if self.total_pnl_by_date:
+                self.current_total_pnl_date = max(self.total_pnl_by_date.keys())
             else:
-                self.current_trade_date = None
-            self.pending_daily_pnl_payload = None
-            self.dirty_daily_pnl = False
+                self.current_total_pnl_date = None
 
             self._initialized = True
 
@@ -332,7 +345,9 @@ class CacheStore:
                 return
             entry["unrealized_pnl"] = unrealized_pnl
             if daily_pnl is not None:
-                entry["daily_pnl"] = daily_pnl
+                safe_daily = _safe_daily_pnl(daily_pnl)
+                if safe_daily is not None:
+                    entry["daily_pnl"] = safe_daily
             entry["total_pnl"] = entry.get("realized_pnl", 0.0) + entry.get(
                 "unrealized_pnl", 0.0
             )
@@ -353,17 +368,20 @@ class CacheStore:
             self._initialized = True
             self.last_update = _utc_now()
 
-    def update_daily_pnl(self, trade_date: str, daily_pnl: float) -> None:
+    def update_current_daily_pnl(self, daily_pnl: float) -> None:
+        safe_daily = _safe_daily_pnl(daily_pnl)
+        if safe_daily is None:
+            return
         with self._lock:
-            previous_date = self.current_trade_date
-            self.daily_pnl_by_date[trade_date] = daily_pnl
-            self._rebuild_daily_series_locked()
-            if previous_date and previous_date != trade_date:
-                payload = self._daily_payload_for_date_locked(previous_date)
-                if payload:
-                    self.pending_daily_pnl_payload = payload
-                    self.dirty_daily_pnl = True
-            self.current_trade_date = trade_date
+            self.current_daily_pnl = safe_daily
+            self._initialized = True
+            self.last_update = _utc_now()
+
+    def update_total_pnl(self, trade_date: str, total_pnl: float) -> None:
+        with self._lock:
+            self.total_pnl_by_date[trade_date] = float(total_pnl)
+            self._rebuild_total_pnl_series_locked()
+            self.current_total_pnl_date = trade_date
             self._initialized = True
             self.last_update = _utc_now()
 
@@ -413,7 +431,7 @@ class CacheStore:
                 "realized_pnl": float(item.get("realized_pnl", 0.0)),
                 "unrealized_pnl": float(item.get("unrealized_pnl", 0.0)),
                 "total_pnl": float(item.get("total_pnl", 0.0)),
-                "daily_pnl": float(item.get("daily_pnl", 0.0)),
+                "daily_pnl": _safe_daily_pnl(item.get("daily_pnl")) or 0.0,
                 "open_time": _format_bj_time(item.get("open_time")),
             }
             for item in positions
@@ -438,10 +456,7 @@ class CacheStore:
         with self._lock:
             positions = list(self.positions_by_key.values())
             realized_total = self.realized_total
-            daily_value = 0.0
-            if self.daily_pnl_by_date:
-                latest_date = max(self.daily_pnl_by_date.keys())
-                daily_value = float(self.daily_pnl_by_date[latest_date])
+            daily_value = self.current_daily_pnl
             base_currency = self.base_currency
             account_id = self.account_id
             as_of = self.last_update or _utc_now()
@@ -481,85 +496,42 @@ class CacheStore:
         summary.setdefault("as_of", _utc_now())
         return summary
 
-    def snapshot_daily_pnl(self) -> list[dict[str, Any]]:
+    def snapshot_total_pnl_trend(self) -> list[dict[str, Any]]:
         with self._lock:
-            series = list(self.daily_pnl_series)
+            series = list(self.total_pnl_series)
         return [
             {
                 "trade_date": item["trade_date"],
-                "daily_pnl": float(item["daily_pnl"]),
-                "cumulative_pnl": float(item["cumulative_pnl"]),
-            }
-            for item in series
-        ]
-
-    def snapshot_trade_cumulative(self) -> list[dict[str, Any]]:
-        with self._lock:
-            series = list(self.daily_pnl_series)
-        return [
-            {
-                "trade_date": item["trade_date"],
-                "cumulative_pnl": float(item["cumulative_pnl"]),
-                "daily_pnl": float(item["daily_pnl"]),
+                "total_pnl": float(item["total_pnl"]),
             }
             for item in series
         ]
 
     def collect_flush_payload(
         self,
-    ) -> tuple[dict[str, Any] | None, set[str], dict[str, Any] | None]:
+    ) -> tuple[dict[str, Any] | None, set[str]]:
         with self._lock:
             summary_fields = set(self.dirty_account_summary_fields)
             account_summary = dict(self.account_summary) if summary_fields else None
-            daily_payload = None
-            if self.dirty_daily_pnl and self.pending_daily_pnl_payload:
-                daily_payload = dict(self.pending_daily_pnl_payload)
-        return account_summary, summary_fields, daily_payload
+        return account_summary, summary_fields
 
     def clear_dirty(
         self,
         account_summary_fields: set[str] | None = None,
-        daily_pnl: bool = False,
     ) -> None:
         with self._lock:
             if account_summary_fields:
                 self.dirty_account_summary_fields -= set(account_summary_fields)
-            if daily_pnl:
-                self.dirty_daily_pnl = False
-                self.pending_daily_pnl_payload = None
 
-    def _rebuild_daily_series_locked(self) -> None:
-        dates = sorted(self.daily_pnl_by_date.keys())
-        cumulative = 0.0
+    def _rebuild_total_pnl_series_locked(self) -> None:
+        dates = sorted(self.total_pnl_by_date.keys())
         series: list[dict[str, Any]] = []
         for trade_date in dates:
-            daily_value = float(self.daily_pnl_by_date[trade_date])
-            cumulative += daily_value
+            total_value = float(self.total_pnl_by_date[trade_date])
             series.append(
                 {
                     "trade_date": trade_date,
-                    "daily_pnl": daily_value,
-                    "cumulative_pnl": cumulative,
+                    "total_pnl": total_value,
                 }
             )
-        self.daily_pnl_series = series
-
-    def _current_daily_payload_locked(self) -> dict[str, Any] | None:
-        if not self.daily_pnl_series:
-            return None
-        last = self.daily_pnl_series[-1]
-        return {
-            "trade_date": last["trade_date"],
-            "daily_pnl": float(last["daily_pnl"]),
-            "cumulative_pnl": float(last["cumulative_pnl"]),
-        }
-
-    def _daily_payload_for_date_locked(self, trade_date: str) -> dict[str, Any] | None:
-        for entry in self.daily_pnl_series:
-            if entry["trade_date"] == trade_date:
-                return {
-                    "trade_date": entry["trade_date"],
-                    "daily_pnl": float(entry["daily_pnl"]),
-                    "cumulative_pnl": float(entry["cumulative_pnl"]),
-                }
-        return None
+        self.total_pnl_series = series

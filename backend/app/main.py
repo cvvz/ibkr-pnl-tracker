@@ -17,12 +17,11 @@ from .db import get_connection, init_db, upsert_account
 from .ibkr_sync import IBKRSyncManager, OrderPayload
 from .k8s import restart_deployment
 from .pnl import (
-    get_account_daily_pnl,
     get_account_snapshot,
     get_account_summary,
     get_history_positions,
     get_positions,
-    get_trade_cumulative,
+    get_total_pnl_series,
 )
 
 
@@ -329,13 +328,7 @@ def pnl_summary() -> Dict[str, Any]:
 
 @app.get("/pnl/daily")
 def pnl_daily() -> List[Dict[str, Any]]:
-    if _cache_ready():
-        return app.state.cache.snapshot_daily_pnl()
-    with get_connection(settings.database_url) as conn:
-        account = _get_default_account(conn)
-        if not account:
-            return []
-        return get_account_daily_pnl(conn, account["id"])
+    return []
 
 
 @app.get("/account/summary")
@@ -364,12 +357,12 @@ def account_summary() -> Dict[str, Any]:
 @app.get("/pnl/trade-cumulative")
 def trade_cumulative() -> List[Dict[str, Any]]:
     if _cache_ready():
-        return app.state.cache.snapshot_trade_cumulative()
+        return app.state.cache.snapshot_total_pnl_trend()
     with get_connection(settings.database_url) as conn:
         account = _get_default_account(conn)
         if not account:
             return []
-        return get_trade_cumulative(conn, account["id"])
+        return get_total_pnl_series(conn, account["id"])
 
 
 @app.get("/trades")
@@ -445,7 +438,7 @@ async def updates(ws: WebSocket) -> None:
                     "summary": app.state.cache.snapshot_account_pnl(),
                     "positions": app.state.cache.snapshot_positions(),
                     "history": app.state.cache.snapshot_history(),
-                    "daily_pnl": app.state.cache.snapshot_daily_pnl(),
+                    "total_pnl_trend": app.state.cache.snapshot_total_pnl_trend(),
                     "account_summary": app.state.cache.snapshot_account_summary(),
                 }
             else:
@@ -464,7 +457,7 @@ async def updates(ws: WebSocket) -> None:
                             },
                             "positions": [],
                             "history": [],
-                            "daily_pnl": [],
+                            "total_pnl_trend": [],
                             "account_summary": {
                                 "account_id": None,
                                 "base_currency": settings.base_currency,
@@ -484,7 +477,7 @@ async def updates(ws: WebSocket) -> None:
                             "summary": get_account_summary(conn, account["id"], account["base_currency"]),
                             "positions": get_positions(conn, account["id"], account["base_currency"]),
                             "history": get_history_positions(conn, account["id"], account["base_currency"]),
-                            "daily_pnl": get_account_daily_pnl(conn, account["id"]),
+                            "total_pnl_trend": get_total_pnl_series(conn, account["id"]),
                             "account_summary": get_account_snapshot(
                                 conn, account["id"], account["base_currency"]
                             ),

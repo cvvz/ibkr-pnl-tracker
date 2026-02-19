@@ -143,17 +143,7 @@ def get_account_summary(conn: psycopg.Connection, account_id: int, base_currency
     ).fetchone()
     unrealized_total = float(unrealized_row["total"]) if unrealized_row else 0.0
 
-    daily_row = conn.execute(
-        """
-        SELECT daily_pnl
-        FROM account_daily_pnl
-        WHERE account_id = %s
-        ORDER BY trade_date DESC
-        LIMIT 1
-        """,
-        (account_id,),
-    ).fetchone()
-    daily_value = float(daily_row["daily_pnl"]) if daily_row else 0.0
+    daily_value = 0.0
 
     total_value = realized_total + unrealized_total
     return {
@@ -167,11 +157,11 @@ def get_account_summary(conn: psycopg.Connection, account_id: int, base_currency
     }
 
 
-def get_account_daily_pnl(conn: psycopg.Connection, account_id: int) -> List[Dict]:
+def get_total_pnl_series(conn: psycopg.Connection, account_id: int) -> List[Dict]:
     rows = conn.execute(
         """
-        SELECT trade_date, daily_pnl, cumulative_pnl
-        FROM account_daily_pnl
+        SELECT trade_date, total_pnl
+        FROM account_total_pnl
         WHERE account_id = %s
         ORDER BY trade_date
         """,
@@ -180,38 +170,10 @@ def get_account_daily_pnl(conn: psycopg.Connection, account_id: int) -> List[Dic
     return [
         {
             "trade_date": row["trade_date"],
-            "daily_pnl": float(row["daily_pnl"]),
-            "cumulative_pnl": float(row["cumulative_pnl"]),
+            "total_pnl": float(row["total_pnl"]),
         }
         for row in rows
     ]
-
-
-def get_trade_cumulative(conn: psycopg.Connection, account_id: int) -> List[Dict]:
-    rows = conn.execute(
-        """
-        SELECT trade_date, daily_pnl
-        FROM account_daily_pnl
-        WHERE account_id = %s
-        ORDER BY trade_date
-        """,
-        (account_id,),
-    ).fetchall()
-
-    cumulative = 0.0
-    series: List[Dict] = []
-    for row in rows:
-        daily_value = float(row["daily_pnl"])
-        cumulative += daily_value
-        series.append(
-            {
-                "trade_date": row["trade_date"],
-                "cumulative_pnl": cumulative,
-                "daily_pnl": daily_value,
-            }
-        )
-
-    return series
 
 
 def get_account_snapshot(conn: psycopg.Connection, account_id: int, base_currency: str) -> Dict:

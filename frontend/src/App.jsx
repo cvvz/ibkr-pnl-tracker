@@ -58,7 +58,7 @@ function App() {
   const [accountSummary, setAccountSummary] = useState(null);
   const [positions, setPositions] = useState([]);
   const [historyPositions, setHistoryPositions] = useState([]);
-  const [dailyPnlTrendSeries, setDailyPnlTrendSeries] = useState([]);
+  const [totalPnlTrendSeries, setTotalPnlTrendSeries] = useState([]);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [ibStatus, setIbStatus] = useState({
     connected: false,
@@ -103,7 +103,7 @@ function App() {
       positionsRes,
       historyRes,
       accountSummaryRes,
-      dailyPnlTrendRes
+      totalPnlTrendRes
     ] =
         await Promise.all([
           fetch(`${API_BASE}/pnl/summary`),
@@ -116,7 +116,7 @@ function App() {
     setPositions(await positionsRes.json());
     setHistoryPositions(await historyRes.json());
     setAccountSummary(await accountSummaryRes.json());
-    setDailyPnlTrendSeries(await dailyPnlTrendRes.json());
+    setTotalPnlTrendSeries(await totalPnlTrendRes.json());
   };
 
     fetchSnapshot().catch(() => setWsStatus("error"));
@@ -124,22 +124,22 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    const fetchDailyPnlTrendSeries = async () => {
+    const fetchTotalPnlTrendSeries = async () => {
       try {
         const response = await fetch(`${API_BASE}/pnl/trade-cumulative`);
         const payload = await response.json();
         if (active) {
-          setDailyPnlTrendSeries(payload);
+          setTotalPnlTrendSeries(payload);
         }
       } catch (error) {
         if (active) {
-          setDailyPnlTrendSeries([]);
+          setTotalPnlTrendSeries([]);
         }
       }
     };
 
-    fetchDailyPnlTrendSeries();
-    const interval = setInterval(fetchDailyPnlTrendSeries, 15000);
+    fetchTotalPnlTrendSeries();
+    const interval = setInterval(fetchTotalPnlTrendSeries, 15000);
 
     return () => {
       active = false;
@@ -293,8 +293,8 @@ function App() {
     return copy;
   }, [positions]);
 
-  const dailyPnlTrendChart = useMemo(() => {
-    if (!dailyPnlTrendSeries || dailyPnlTrendSeries.length === 0) {
+  const totalPnlTrendChart = useMemo(() => {
+    if (!totalPnlTrendSeries || totalPnlTrendSeries.length === 0) {
       return null;
     }
     const width = 640;
@@ -307,16 +307,16 @@ function App() {
     };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
-    const values = dailyPnlTrendSeries.map(
-      (item) => item.cumulative_pnl ?? 0
+    const values = totalPnlTrendSeries.map(
+      (item) => item.total_pnl ?? 0
     );
     const allValues = [...values, 0];
     const minValue = Math.min(...allValues);
     const maxValue = Math.max(...allValues);
     const range = maxValue - minValue || 1;
     const stepX =
-      dailyPnlTrendSeries.length > 1
-        ? chartWidth / (dailyPnlTrendSeries.length - 1)
+      totalPnlTrendSeries.length > 1
+        ? chartWidth / (totalPnlTrendSeries.length - 1)
         : 0;
     const toPoint = (value, index) => {
       const x = padding.left + index * stepX;
@@ -332,7 +332,7 @@ function App() {
         ...point,
         value,
         index,
-        date: dailyPnlTrendSeries[index]?.trade_date ?? "--"
+        date: totalPnlTrendSeries[index]?.trade_date ?? "--"
       };
     });
     const points = valuePoints.map((point) => `${point.x},${point.y}`).join(" ");
@@ -346,11 +346,11 @@ function App() {
       })
     );
     const labels = {
-      start: dailyPnlTrendSeries[0]?.trade_date,
+      start: totalPnlTrendSeries[0]?.trade_date,
       mid:
-        dailyPnlTrendSeries[Math.floor((dailyPnlTrendSeries.length - 1) / 2)]
-          ?.trade_date ?? dailyPnlTrendSeries[0]?.trade_date,
-      end: dailyPnlTrendSeries[dailyPnlTrendSeries.length - 1]?.trade_date
+        totalPnlTrendSeries[Math.floor((totalPnlTrendSeries.length - 1) / 2)]
+          ?.trade_date ?? totalPnlTrendSeries[0]?.trade_date,
+      end: totalPnlTrendSeries[totalPnlTrendSeries.length - 1]?.trade_date
     };
     return {
       width,
@@ -363,7 +363,7 @@ function App() {
       ticks,
       labels
     };
-  }, [dailyPnlTrendSeries]);
+  }, [totalPnlTrendSeries]);
 
   const healthMetrics = useMemo(() => {
     if (!accountSummary) {
@@ -635,17 +635,17 @@ function App() {
         <section className="panel-grid">
           <div className="panel">
             <div className="panel-header">
-              <h2>Cumulative PnL (Trend)</h2>
-              <span className="tag">Trade PnL</span>
+              <h2>Total PnL (Trend)</h2>
+              <span className="tag">Account</span>
             </div>
-            {dailyPnlTrendChart ? (
+            {totalPnlTrendChart ? (
               <div className="chart">
                 <div className="chart-canvas">
                   <svg
                     className="pnl-chart"
-                    viewBox={`0 0 ${dailyPnlTrendChart.width} ${dailyPnlTrendChart.height}`}
+                    viewBox={`0 0 ${totalPnlTrendChart.width} ${totalPnlTrendChart.height}`}
                     role="img"
-                    aria-label="Cumulative PnL trend curve"
+                    aria-label="Total PnL trend curve"
                   >
                     <defs>
                       <linearGradient id="tradeLine" x1="0" y1="0" x2="1" y2="0">
@@ -655,26 +655,26 @@ function App() {
                     </defs>
                     <line
                       className="chart-axis"
-                      x1={dailyPnlTrendChart.padding.left}
-                      y1={dailyPnlTrendChart.padding.top}
-                      x2={dailyPnlTrendChart.padding.left}
-                      y2={dailyPnlTrendChart.height - dailyPnlTrendChart.padding.bottom}
+                      x1={totalPnlTrendChart.padding.left}
+                      y1={totalPnlTrendChart.padding.top}
+                      x2={totalPnlTrendChart.padding.left}
+                      y2={totalPnlTrendChart.height - totalPnlTrendChart.padding.bottom}
                     />
-                    {dailyPnlTrendChart.ticks.map((tick, index) => (
+                    {totalPnlTrendChart.ticks.map((tick, index) => (
                       <g key={`tick-${index}`}>
                         <line
                           className="chart-grid"
-                          x1={dailyPnlTrendChart.padding.left}
+                          x1={totalPnlTrendChart.padding.left}
                           y1={tick.y}
                           x2={
-                            dailyPnlTrendChart.width -
-                            dailyPnlTrendChart.padding.right
+                            totalPnlTrendChart.width -
+                            totalPnlTrendChart.padding.right
                           }
                           y2={tick.y}
                         />
                         <text
                           className="chart-axis-label"
-                          x={dailyPnlTrendChart.padding.left - 8}
+                          x={totalPnlTrendChart.padding.left - 8}
                           y={tick.y + 4}
                           textAnchor="end"
                         >
@@ -684,12 +684,12 @@ function App() {
                     ))}
                     <polyline
                       className="pnl-line cumulative"
-                      points={dailyPnlTrendChart.points}
+                      points={totalPnlTrendChart.points}
                       fill="none"
                       stroke="url(#tradeLine)"
                       strokeWidth="3"
                     />
-                    {dailyPnlTrendChart.valuePoints.map((point) => (
+                    {totalPnlTrendChart.valuePoints.map((point) => (
                       <circle
                         key={`point-${point.index}`}
                         className="pnl-point"
@@ -717,13 +717,13 @@ function App() {
                   )}
                 </div>
                 <div className="chart-labels">
-                  <span>{dailyPnlTrendChart.labels.start ?? "--"}</span>
-                  <span>{dailyPnlTrendChart.labels.mid ?? "--"}</span>
-                  <span>{dailyPnlTrendChart.labels.end ?? "--"}</span>
+                  <span>{totalPnlTrendChart.labels.start ?? "--"}</span>
+                  <span>{totalPnlTrendChart.labels.mid ?? "--"}</span>
+                  <span>{totalPnlTrendChart.labels.end ?? "--"}</span>
                 </div>
               </div>
             ) : (
-              <div className="row empty">No trade PnL yet.</div>
+              <div className="row empty">No total PnL yet.</div>
             )}
           </div>
           <div className="panel">
