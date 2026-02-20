@@ -15,7 +15,6 @@ from .config import load_settings
 from .cache import CacheStore
 from .db import get_connection, init_db, upsert_account
 from .ibkr_sync import IBKRSyncManager, OrderPayload
-from .k8s import restart_deployment
 from .pnl import (
     get_account_snapshot,
     get_account_summary,
@@ -187,34 +186,7 @@ def sync_health() -> Dict[str, Any]:
         "ibkr_connected": status.ibkr_connected,
         "ibkr_last_connected_at": status.ibkr_last_connected_at,
         "ibkr_last_disconnected_at": status.ibkr_last_disconnected_at,
-        "vnc_url": settings.gateway_vnc_url,
     }
-
-
-@app.post("/gateway/restart")
-def gateway_restart() -> Dict[str, Any]:
-    if not settings.gateway_restart_enabled:
-        raise HTTPException(status_code=400, detail="Gateway restart disabled")
-    if settings.gateway_restart_file:
-        try:
-            with open(settings.gateway_restart_file, "w", encoding="utf-8") as handle:
-                handle.write(_utc_now())
-            return {
-                "status": "restart_requested",
-                "method": "flag_file",
-                "path": settings.gateway_restart_file,
-            }
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-    try:
-        restart_deployment(settings.gateway_deployment, settings.gateway_namespace)
-        return {
-            "status": "restarting",
-            "deployment": settings.gateway_deployment,
-            "namespace": settings.gateway_namespace,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/orders")
@@ -326,11 +298,6 @@ def pnl_summary() -> Dict[str, Any]:
         return get_account_summary(conn, account["id"], account["base_currency"])
 
 
-@app.get("/pnl/daily")
-def pnl_daily() -> List[Dict[str, Any]]:
-    return []
-
-
 @app.get("/account/summary")
 def account_summary() -> Dict[str, Any]:
     if _cache_ready():
@@ -354,8 +321,8 @@ def account_summary() -> Dict[str, Any]:
         return get_account_snapshot(conn, account["id"], account["base_currency"])
 
 
-@app.get("/pnl/trade-cumulative")
-def trade_cumulative() -> List[Dict[str, Any]]:
+@app.get("/pnl/total-trend")
+def total_trend() -> List[Dict[str, Any]]:
     if _cache_ready():
         return app.state.cache.snapshot_total_pnl_trend()
     with get_connection(settings.database_url) as conn:
@@ -435,7 +402,7 @@ async def updates(ws: WebSocket) -> None:
         while True:
             if _cache_ready():
                 payload = {
-                    "summary": app.state.cache.snapshot_account_pnl(),
+                    "pnl_summary": app.state.cache.snapshot_account_pnl(),
                     "positions": app.state.cache.snapshot_positions(),
                     "history": app.state.cache.snapshot_history(),
                     "total_pnl_trend": app.state.cache.snapshot_total_pnl_trend(),
@@ -446,7 +413,7 @@ async def updates(ws: WebSocket) -> None:
                     account = _get_default_account(conn)
                     if not account:
                         payload = {
-                            "summary": {
+                            "pnl_summary": {
                                 "account_id": None,
                                 "base_currency": settings.base_currency,
                                 "realized_pnl": 0.0,
@@ -474,7 +441,9 @@ async def updates(ws: WebSocket) -> None:
                         }
                     else:
                         payload = {
-                            "summary": get_account_summary(conn, account["id"], account["base_currency"]),
+                            "pnl_summary": get_account_summary(
+                                conn, account["id"], account["base_currency"]
+                            ),
                             "positions": get_positions(conn, account["id"], account["base_currency"]),
                             "history": get_history_positions(conn, account["id"], account["base_currency"]),
                             "total_pnl_trend": get_total_pnl_series(conn, account["id"]),

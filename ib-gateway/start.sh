@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VNC_PORT="${VNC_PORT:-5900}"
+VNC_PORT="${VNC_PORT:-5901}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_PASSWORD="${VNC_PASSWORD:-}"
-RESTART_FILE="${GATEWAY_RESTART_FILE:-/root/Jts/gateway-restart.flag}"
 export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.net.preferIPv4Stack=true"
 
 mkdir -p /tmp/.X11-unix
@@ -61,12 +60,6 @@ while true; do
   done
 
   while true; do
-    if [ -f "$RESTART_FILE" ]; then
-      echo "Restart flag detected, restarting IB Gateway..."
-      rm -f "$RESTART_FILE"
-      kill_gateway
-      break
-    fi
     if [ -n "$GW_PID" ] && ! kill -0 "$GW_PID" >/dev/null 2>&1; then
       break
     fi

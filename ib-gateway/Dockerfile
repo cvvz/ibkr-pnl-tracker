@@ -4,7 +4,7 @@ ARG IB_GATEWAY_URL="https://download2.interactivebrokers.com/installers/ibgatewa
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:0 \
-    VNC_PORT=5900 \
+    VNC_PORT=5901 \
     NOVNC_PORT=6080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,6 +45,6 @@ RUN curl -fsSL "$IB_GATEWAY_URL" -o /tmp/ibgateway.sh \
 COPY start.sh /usr/local/bin/start-ibgateway.sh
 RUN chmod +x /usr/local/bin/start-ibgateway.sh
 
-EXPOSE 4001 5900 6080
+EXPOSE 4001 5901 6080
 
 CMD ["/usr/local/bin/start-ibgateway.sh"]

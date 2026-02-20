@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
+const WS_BASE =
+  (import.meta.env.VITE_WS_BASE ?? "").replace(/\/$/, "") ||
+  (API_BASE.startsWith("http://") || API_BASE.startsWith("https://")
+    ? API_BASE.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${API_BASE}`);
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("en-US", {
@@ -54,19 +59,18 @@ const buildIdempotencyKey = () => {
 };
 
 function App() {
-  const [summary, setSummary] = useState(null);
+  const [pnlSummary, setPnlSummary] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
   const [positions, setPositions] = useState([]);
   const [historyPositions, setHistoryPositions] = useState([]);
-  const [totalPnlTrendSeries, setTotalPnlTrendSeries] = useState([]);
+  const [totalTrendSeries, setTotalTrendSeries] = useState([]);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [ibStatus, setIbStatus] = useState({
     connected: false,
     ibkr_connected: false,
     error: null,
     last_update: null,
-    last_connected_at: null,
-    vnc_url: null
+    last_connected_at: null
   });
   const [expanded, setExpanded] = useState(new Set());
   const [tradesByPosition, setTradesByPosition] = useState({});
@@ -81,7 +85,7 @@ function App() {
   });
   const [orderStatus, setOrderStatus] = useState(null);
 
-  const baseCurrency = summary?.base_currency ?? "USD";
+  const baseCurrency = pnlSummary?.base_currency ?? "USD";
   const money = useMemo(() => currencyFormatter(baseCurrency), [baseCurrency]);
 
   const toggleExpanded = (positionId) => {
@@ -99,24 +103,24 @@ function App() {
   useEffect(() => {
     const fetchSnapshot = async () => {
     const [
-      summaryRes,
+      pnlSummaryRes,
       positionsRes,
       historyRes,
       accountSummaryRes,
-      totalPnlTrendRes
+      totalTrendRes
     ] =
         await Promise.all([
           fetch(`${API_BASE}/pnl/summary`),
           fetch(`${API_BASE}/positions`),
           fetch(`${API_BASE}/positions/history`),
           fetch(`${API_BASE}/account/summary`),
-          fetch(`${API_BASE}/pnl/trade-cumulative`)
+          fetch(`${API_BASE}/pnl/total-trend`)
         ]);
-    setSummary(await summaryRes.json());
+    setPnlSummary(await pnlSummaryRes.json());
     setPositions(await positionsRes.json());
     setHistoryPositions(await historyRes.json());
     setAccountSummary(await accountSummaryRes.json());
-    setTotalPnlTrendSeries(await totalPnlTrendRes.json());
+    setTotalTrendSeries(await totalTrendRes.json());
   };
 
     fetchSnapshot().catch(() => setWsStatus("error"));
@@ -124,22 +128,22 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    const fetchTotalPnlTrendSeries = async () => {
+    const fetchTotalTrendSeries = async () => {
       try {
-        const response = await fetch(`${API_BASE}/pnl/trade-cumulative`);
+        const response = await fetch(`${API_BASE}/pnl/total-trend`);
         const payload = await response.json();
         if (active) {
-          setTotalPnlTrendSeries(payload);
+          setTotalTrendSeries(payload);
         }
       } catch (error) {
         if (active) {
-          setTotalPnlTrendSeries([]);
+          setTotalTrendSeries([]);
         }
       }
     };
 
-    fetchTotalPnlTrendSeries();
-    const interval = setInterval(fetchTotalPnlTrendSeries, 15000);
+    fetchTotalTrendSeries();
+    const interval = setInterval(fetchTotalTrendSeries, 15000);
 
     return () => {
       active = false;
@@ -179,15 +183,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const wsBase = API_BASE.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsBase}/ws/updates`);
+    const socket = new WebSocket(`${WS_BASE}/ws/updates`);
 
     socket.addEventListener("open", () => setWsStatus("live"));
     socket.addEventListener("close", () => setWsStatus("disconnected"));
     socket.addEventListener("error", () => setWsStatus("error"));
     socket.addEventListener("message", (event) => {
       const payload = JSON.parse(event.data);
-      setSummary(payload.summary);
+      setPnlSummary(payload.pnl_summary);
       setPositions(payload.positions);
       if (payload.history) {
         setHistoryPositions(payload.history);
@@ -222,13 +225,6 @@ function App() {
       }
     });
   }, [expanded, positions, tradesByPosition]);
-
-  const restartGateway = async () => {
-    await fetch(`${API_BASE}/gateway/restart`, { method: "POST" });
-    if (ibStatus.vnc_url) {
-      window.open(ibStatus.vnc_url, "_blank");
-    }
-  };
 
   const submitOrder = async (event) => {
     event.preventDefault();
@@ -279,10 +275,8 @@ function App() {
     ? "error"
     : "disconnected";
   const ibkrStatusClass = ibkrConnected ? "live" : "error";
-  const showReauth =
-    ibStatus.vnc_url && (!gatewayConnected || ibStatus.ibkr_connected === false);
 
-  const accountTotalPnl = summary?.total_pnl ?? null;
+  const accountTotalPnl = pnlSummary?.total_pnl ?? null;
   const sortedPositions = useMemo(() => {
     const copy = [...positions];
     copy.sort((a, b) => {
@@ -293,8 +287,8 @@ function App() {
     return copy;
   }, [positions]);
 
-  const totalPnlTrendChart = useMemo(() => {
-    if (!totalPnlTrendSeries || totalPnlTrendSeries.length === 0) {
+  const totalTrendChart = useMemo(() => {
+    if (!totalTrendSeries || totalTrendSeries.length === 0) {
       return null;
     }
     const width = 640;
@@ -307,7 +301,7 @@ function App() {
     };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
-    const values = totalPnlTrendSeries.map(
+    const values = totalTrendSeries.map(
       (item) => item.total_pnl ?? 0
     );
     const allValues = [...values, 0];
@@ -315,8 +309,8 @@ function App() {
     const maxValue = Math.max(...allValues);
     const range = maxValue - minValue || 1;
     const stepX =
-      totalPnlTrendSeries.length > 1
-        ? chartWidth / (totalPnlTrendSeries.length - 1)
+      totalTrendSeries.length > 1
+        ? chartWidth / (totalTrendSeries.length - 1)
         : 0;
     const toPoint = (value, index) => {
       const x = padding.left + index * stepX;
@@ -332,7 +326,7 @@ function App() {
         ...point,
         value,
         index,
-        date: totalPnlTrendSeries[index]?.trade_date ?? "--"
+        date: totalTrendSeries[index]?.trade_date ?? "--"
       };
     });
     const points = valuePoints.map((point) => `${point.x},${point.y}`).join(" ");
@@ -346,11 +340,11 @@ function App() {
       })
     );
     const labels = {
-      start: totalPnlTrendSeries[0]?.trade_date,
+      start: totalTrendSeries[0]?.trade_date,
       mid:
-        totalPnlTrendSeries[Math.floor((totalPnlTrendSeries.length - 1) / 2)]
-          ?.trade_date ?? totalPnlTrendSeries[0]?.trade_date,
-      end: totalPnlTrendSeries[totalPnlTrendSeries.length - 1]?.trade_date
+        totalTrendSeries[Math.floor((totalTrendSeries.length - 1) / 2)]
+          ?.trade_date ?? totalTrendSeries[0]?.trade_date,
+      end: totalTrendSeries[totalTrendSeries.length - 1]?.trade_date
     };
     return {
       width,
@@ -363,7 +357,7 @@ function App() {
       ticks,
       labels
     };
-  }, [totalPnlTrendSeries]);
+  }, [totalTrendSeries]);
 
   const healthMetrics = useMemo(() => {
     if (!accountSummary) {
@@ -573,11 +567,6 @@ function App() {
                 <span className={`status ${ibkrStatusClass}`}>
                   {ibkrConnected ? "IBKR Connected" : "IBKR Disconnected"}
                 </span>
-                {showReauth && (
-                  <button className="btn tiny" onClick={restartGateway}>
-                    Re-auth (VNC)
-                  </button>
-                )}
                 {ibStatus.error && (
                   <span className="status-note">{ibStatus.error}</span>
                 )}
@@ -587,8 +576,8 @@ function App() {
           <div className="summary">
             <div
               className={`summary-card ${
-                summary?.daily_pnl != null
-                  ? summary.daily_pnl >= 0
+                pnlSummary?.daily_pnl != null
+                  ? pnlSummary.daily_pnl >= 0
                     ? "summary-pos"
                     : "summary-neg"
                   : "summary-pos"
@@ -597,14 +586,14 @@ function App() {
               <p>Daily PnL</p>
               <strong
                 className={
-                  summary?.daily_pnl != null
-                    ? summary.daily_pnl >= 0
+                  pnlSummary?.daily_pnl != null
+                    ? pnlSummary.daily_pnl >= 0
                       ? "pos"
                       : "neg"
                     : ""
                 }
               >
-                {summary?.daily_pnl != null ? money.format(summary.daily_pnl) : "--"}
+                {pnlSummary?.daily_pnl != null ? money.format(pnlSummary.daily_pnl) : "--"}
               </strong>
             </div>
             <div
@@ -638,12 +627,12 @@ function App() {
               <h2>Total PnL (Trend)</h2>
               <span className="tag">Account</span>
             </div>
-            {totalPnlTrendChart ? (
+            {totalTrendChart ? (
               <div className="chart">
                 <div className="chart-canvas">
                   <svg
                     className="pnl-chart"
-                    viewBox={`0 0 ${totalPnlTrendChart.width} ${totalPnlTrendChart.height}`}
+                    viewBox={`0 0 ${totalTrendChart.width} ${totalTrendChart.height}`}
                     role="img"
                     aria-label="Total PnL trend curve"
                   >
@@ -655,26 +644,26 @@ function App() {
                     </defs>
                     <line
                       className="chart-axis"
-                      x1={totalPnlTrendChart.padding.left}
-                      y1={totalPnlTrendChart.padding.top}
-                      x2={totalPnlTrendChart.padding.left}
-                      y2={totalPnlTrendChart.height - totalPnlTrendChart.padding.bottom}
+                      x1={totalTrendChart.padding.left}
+                      y1={totalTrendChart.padding.top}
+                      x2={totalTrendChart.padding.left}
+                      y2={totalTrendChart.height - totalTrendChart.padding.bottom}
                     />
-                    {totalPnlTrendChart.ticks.map((tick, index) => (
+                    {totalTrendChart.ticks.map((tick, index) => (
                       <g key={`tick-${index}`}>
                         <line
                           className="chart-grid"
-                          x1={totalPnlTrendChart.padding.left}
+                          x1={totalTrendChart.padding.left}
                           y1={tick.y}
                           x2={
-                            totalPnlTrendChart.width -
-                            totalPnlTrendChart.padding.right
+                            totalTrendChart.width -
+                            totalTrendChart.padding.right
                           }
                           y2={tick.y}
                         />
                         <text
                           className="chart-axis-label"
-                          x={totalPnlTrendChart.padding.left - 8}
+                          x={totalTrendChart.padding.left - 8}
                           y={tick.y + 4}
                           textAnchor="end"
                         >
@@ -684,12 +673,12 @@ function App() {
                     ))}
                     <polyline
                       className="pnl-line cumulative"
-                      points={totalPnlTrendChart.points}
+                      points={totalTrendChart.points}
                       fill="none"
                       stroke="url(#tradeLine)"
                       strokeWidth="3"
                     />
-                    {totalPnlTrendChart.valuePoints.map((point) => (
+                    {totalTrendChart.valuePoints.map((point) => (
                       <circle
                         key={`point-${point.index}`}
                         className="pnl-point"
@@ -717,9 +706,9 @@ function App() {
                   )}
                 </div>
                 <div className="chart-labels">
-                  <span>{totalPnlTrendChart.labels.start ?? "--"}</span>
-                  <span>{totalPnlTrendChart.labels.mid ?? "--"}</span>
-                  <span>{totalPnlTrendChart.labels.end ?? "--"}</span>
+                  <span>{totalTrendChart.labels.start ?? "--"}</span>
+                  <span>{totalTrendChart.labels.mid ?? "--"}</span>
+                  <span>{totalTrendChart.labels.end ?? "--"}</span>
                 </div>
               </div>
             ) : (

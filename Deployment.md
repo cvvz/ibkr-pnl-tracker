@@ -14,10 +14,15 @@ Assumption: frontend, backend, and IB Gateway run on the same machine.
 cd ~/workspace/ibkr-pnl-tracker/ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway \
+    --restart unless-stopped \
+    --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 ```
 
-Ports: `4001` for IB Gateway API, `5900/6080` for VNC/web login and 2FA.
+Port usage:
+- `4001`: IB Gateway API port used by backend (`IBKR_HOST`/`IBKR_PORT`).
+- `5901`: VNC TCP port for native VNC clients.
+- `6080`: noVNC/websockify browser access (for web login and 2FA operations).
 
 ### 1.1) IB Gateway UI Settings
 
@@ -46,6 +51,7 @@ docker build -t ibkr-backend:local \
  .
 
 docker run -d --name ibkr-backend \
+  --restart unless-stopped \
   --network ibkr-net \
   --ip 172.18.0.11 \
   -p 8000:8000 \
@@ -64,8 +70,11 @@ Example (same Docker network):
 
 ```shell
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway \
+    --restart unless-stopped \
+    --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 docker run -d --name ibkr-backend \
+  --restart unless-stopped \
   --network ibkr-net \
     --ip 172.18.0.11 \
   -p 8000:8000 \
@@ -82,9 +91,10 @@ Then set `Trusted IPs` in IB Gateway to `172.18.0.11` (CIDR not supported).
 
 ```shell
 cd ~/workspace/ibkr-pnl-tracker/frontend
-docker build -t ibkr-frontend:lan \
-  --build-arg VITE_API_BASE=http://192.168.50.119:8000 .
-docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+docker build -t ibkr-frontend:lan .
+docker run -d --name ibkr-frontend \
+    --restart unless-stopped \
+    --network ibkr-net -p 80:80 ibkr-frontend:lan
 ```
 
 ### Notes
@@ -108,10 +118,15 @@ If the IB Gateway host uses a proxy, allow direct access for these domains:
 cd ~/workspace/ibkr-pnl-tracker/ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway \
+    --restart unless-stopped \
+    --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 ```
 
-说明：端口 `4001` 为 IB Gateway API，`5900/6080` 用于 VNC/网页版登录和 2FA。  
+端口用途说明：
+- `4001`：IB Gateway API 端口，后端通过 `IBKR_HOST`/`IBKR_PORT` 连接。
+- `5901`：VNC 原生 TCP 端口，供 VNC 客户端连接。
+- `6080`：noVNC/websockify 网页入口，用于浏览器登录和 2FA 操作。  
 
 ### 1.1) IB Gateway 后台设置
 
@@ -140,6 +155,7 @@ docker build -t ibkr-backend:local \
  .
 
 docker run -d --name ibkr-backend \
+  --restart unless-stopped \
   --network ibkr-net \
   --ip 172.18.0.11 \
   -p 8000:8000 \
@@ -158,8 +174,11 @@ docker run -d --name ibkr-backend \
 
 ```shell
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway \
+    --restart unless-stopped \
+    --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 docker run -d --name ibkr-backend \
+  --restart unless-stopped \
   --network ibkr-net \
     --ip 172.18.0.11 \
   -p 8000:8000 \
@@ -176,9 +195,10 @@ docker run -d --name ibkr-backend \
 
 ```shell
 cd ~/workspace/ibkr-pnl-tracker/frontend
-docker build -t ibkr-frontend:lan \
-  --build-arg VITE_API_BASE=http://192.168.50.119:8000 .
-docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+docker build -t ibkr-frontend:lan .
+docker run -d --name ibkr-frontend \
+    --restart unless-stopped \
+    --network ibkr-net -p 80:80 ibkr-frontend:lan
 ```
 
 ### 其他

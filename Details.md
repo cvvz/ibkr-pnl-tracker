@@ -21,39 +21,42 @@ flowchart LR
 | GET | `/health` | Local | `{ status, time }` | Basic health check |
 | POST | `/sync/stop` | SyncManager | Status | Stop sync thread |
 | GET | `/sync/status` | SyncManager | Gateway/IBKR status | Includes `ibkr_connected` |
-| GET | `/sync/health` | SyncManager | Status + `vnc_url` | Used by frontend polling |
-| POST | `/gateway/restart` | K8s or flag file | Restart result | Re-auth entry |
+| GET | `/sync/health` | SyncManager | Status | Used by frontend polling |
 | POST | `/orders` | IB Gateway | Order result | Idempotency supported |
 | GET | `/positions` | Cache first | Current positions | DB fallback |
 | GET | `/positions/history` | Cache first | Historical positions | DB fallback |
-| GET | `/pnl/summary` | Cache first | `{ realized, unrealized, daily, total }` | Account PnL |
-| GET | `/pnl/daily` | Cache first | Daily PnL list | DB fallback |
+| GET | `/pnl/summary` | Cache first | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | Account PnL |
 | GET | `/account/summary` | Cache first | Account health metrics | DB fallback |
-| GET | `/pnl/trade-cumulative` | Cache first | Cumulative Daily PnL | Trend chart |
+| GET | `/pnl/total-trend` | Cache first | Total PnL series | Trend chart |
 | GET | `/trades` | DB | Trade list | For export/debug |
 | GET | `/positions/{id}/trades` | DB | Trades for a position | Used by frontend |
-| WS | `/ws/updates` | Cache first | Real-time snapshot | `summary/positions/history/daily_pnl/account_summary` |
+| WS | `/ws/updates` | Cache first | Real-time snapshot | `pnl_summary/positions/history/total_pnl_trend/account_summary` |
 
 **/ws/updates payload**
-- `summary`: account PnL summary (total/daily/realized/unrealized).
+- `pnl_summary`: account PnL summary (`daily_pnl` / `total_pnl` / `realized_pnl` / `unrealized_pnl`).
 - `positions`: current positions.
 - `history`: historical positions.
-- `daily_pnl`: daily PnL series.
+- `total_pnl_trend`: total PnL trend series.
 - `account_summary`: account health metrics.
 
 ### Frontend Data Flow (Startup/Refresh)
 
-1. Initial page load calls: `/pnl/summary`, `/positions`, `/positions/history`, `/account/summary`, `/pnl/trade-cumulative`.
-2. WebSocket `/ws/updates` updates `summary / positions / history / account_summary`.
-3. `/pnl/trade-cumulative` is refreshed every 15 seconds for the trend chart.
+1. Initial page load calls: `/pnl/summary`, `/positions`, `/positions/history`, `/account/summary`, `/pnl/total-trend`.
+2. WebSocket `/ws/updates` updates `pnl_summary / positions / history / account_summary`.
+3. `/pnl/total-trend` is refreshed every 15 seconds for the trend chart.
 4. `/sync/health` is polled every 2 seconds for Gateway/IBKR status.
 5. `/positions/{id}/trades` is fetched to show trade details and compute fee totals.
 6. Order panel submits to `/orders` and shows queued/placed status.
 
 ### Panel Data Sources & Computation
 
-1. Top PnL cards: `/pnl/summary` or WS `summary`.
-2. Cumulative PnL (Trend): `/pnl/trade-cumulative` using `cumulative_pnl`.
+1. Top PnL cards: `/pnl/summary` or WS `pnl_summary`.
+   `Daily PnL` card uses `pnl_summary.daily_pnl`; `Total PnL` card uses `pnl_summary.total_pnl`.
+   Display currency uses `pnl_summary.base_currency` (fallback `USD`); when a value is null, frontend shows `--`.
+   `pnl_summary.daily_pnl` source: IB `pnlEvent.dailyPnL`, stored in cache as `current_daily_pnl` by `on_pnl`.
+   `pnl_summary.total_pnl` calculation: `pnl_summary.realized_pnl + pnl_summary.unrealized_pnl`.
+   `realized_pnl` comes from cumulative trade realized PnL (`trades.realized_pnl` / execution+commission updates); `unrealized_pnl` is summed from current positions (`pnlSingleEvent` updates).
+2. Total PnL (Trend): `/pnl/total-trend` using daily `total_pnl` points.
 3. Account Health: `/account/summary` or WS `account_summary`.
 4. Current Positions: `/positions` or WS `positions`.
 5. Historical Positions: `/positions/history` or WS `history`.
@@ -69,7 +72,7 @@ flowchart LR
 | `commissionReportEvent` | Commission/realized update | Update `trades` and cache realized |
 | `positionEvent` | Position changes | Upsert `positions`, update cache, subscribe `PnLSingle` |
 | `pnlSingleEvent` | Per-position PnL | Update cache `unrealized/daily`, batch flush |
-| `pnlEvent` | Account PnL | Update daily PnL cache |
+| `pnlEvent` | Account PnL | Update account `dailyPnL` cache; `realizedPnL/unrealizedPnL` are currently only validated/logged and not used for business calculations |
 | `accountSummaryEvent` | Account summary | Update cache and write `account_summary` immediately |
 | `errorEvent` | Connection status | 1100/1101/1102 update `ibkr_connected` |
 
@@ -111,7 +114,7 @@ flowchart LR
 
 **Batch / periodic persistence**
 - `positions.unrealized_pnl` and `positions.daily_pnl`: buffered from `pnlSingleEvent`, flushed by `IBKR_CACHE_FLUSH_SECONDS`.
-- `account_daily_pnl`: written once per day when trade date rolls over.
+- `account_total_pnl`: upserted by `IBKR_TOTAL_PNL_FLUSH_SECONDS` (default 300 seconds); also flushed when trade date rolls over.
 
 **Not persisted (frontend computed)**
 - `Value`: `qty * avg_cost`.
@@ -155,39 +158,42 @@ flowchart LR
 | GET | `/health` | 内部 | `{ status, time }` | 基础健康检查 |
 | POST | `/sync/stop` | SyncManager | 运行状态 | 停止后台同步线程 |
 | GET | `/sync/status` | SyncManager | Gateway/IBKR 状态 | 含 `ibkr_connected` |
-| GET | `/sync/health` | SyncManager | 状态 + `vnc_url` | 前端轮询使用 |
-| POST | `/gateway/restart` | K8s 或文件 | 重启结果 | Re-auth 入口 |
+| GET | `/sync/health` | SyncManager | 状态 | 前端轮询使用 |
 | POST | `/orders` | IB Gateway | 下单结果 | 支持幂等键 |
 | GET | `/positions` | Cache 优先 | 当前持仓列表 | 缓存未就绪时读 DB |
 | GET | `/positions/history` | Cache 优先 | 历史持仓列表 | 缓存未就绪时读 DB |
-| GET | `/pnl/summary` | Cache 优先 | `{ realized, unrealized, daily, total }` | 账户汇总 |
-| GET | `/pnl/daily` | Cache 优先 | 每日 PnL 列表 | 缓存未就绪时读 DB |
+| GET | `/pnl/summary` | Cache 优先 | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | 账户汇总 |
 | GET | `/account/summary` | Cache 优先 | 账户健康度指标 | 缓存未就绪时读 DB |
-| GET | `/pnl/trade-cumulative` | Cache 优先 | Daily PnL 累加序列 | 供趋势图 |
+| GET | `/pnl/total-trend` | Cache 优先 | Total PnL 序列 | 供趋势图 |
 | GET | `/trades` | DB | 成交列表 | 后台导出用 |
 | GET | `/positions/{id}/trades` | DB | 指定持仓成交明细 | 前端展开用 |
-| WS | `/ws/updates` | Cache 优先 | 实时快照 | `summary/positions/history/daily_pnl/account_summary` |
+| WS | `/ws/updates` | Cache 优先 | 实时快照 | `pnl_summary/positions/history/total_pnl_trend/account_summary` |
 
 **/ws/updates payload**
-- `summary`: 账户 PnL 汇总（total/daily/realized/unrealized）。
+- `pnl_summary`: 账户 PnL 汇总（`daily_pnl` / `total_pnl` / `realized_pnl` / `unrealized_pnl`）。
 - `positions`: 当前持仓列表（含每日/未实现/已实现）。
 - `history`: 历史持仓列表（含开平仓时间、已实现）。
-- `daily_pnl`: 每日 PnL 时间序列。
+- `total_pnl_trend`: Total PnL 趋势序列。
 - `account_summary`: 账户健康度指标。
 
 ### 前端启动/刷新与数据来源
 
-1. 页面加载时并发调用：`/pnl/summary`、`/positions`、`/positions/history`、`/account/summary`、`/pnl/trade-cumulative`。
-2. 建立 WebSocket `/ws/updates`，收到消息后更新 `summary / positions / history / account_summary`。
-3. `pnl/trade-cumulative` 每 15 秒轮询刷新趋势图。
+1. 页面加载时并发调用：`/pnl/summary`、`/positions`、`/positions/history`、`/account/summary`、`/pnl/total-trend`。
+2. 建立 WebSocket `/ws/updates`，收到消息后更新 `pnl_summary / positions / history / account_summary`。
+3. `pnl/total-trend` 每 15 秒轮询刷新趋势图。
 4. `/sync/health` 每 2 秒轮询，展示 Gateway 与 IBKR 的连接状态。
 5. `positions/{id}/trades` 在持仓列表更新或展开时请求，用于手续费汇总与成交明细。
 6. 订单面板通过 `/orders` 下单，返回排队/已下单状态。
 
 ### 各面板数据如何获取/计算
 
-1. 顶部 PnL 卡片：来自 `/pnl/summary` 或 WS 的 `summary`。
-2. Cumulative PnL (Trend)：来自 `/pnl/trade-cumulative`，使用 `cumulative_pnl`。
+1. 顶部 PnL 卡片：来自 `/pnl/summary` 或 WS 的 `pnl_summary`。
+   `Daily PnL` 卡片读取 `pnl_summary.daily_pnl`；`Total PnL` 卡片读取 `pnl_summary.total_pnl`。
+   货币单位使用 `pnl_summary.base_currency`（默认 `USD`）；字段为空时前端显示 `--`。
+   `pnl_summary.daily_pnl` 来源：IB 的 `pnlEvent.dailyPnL`，由 `on_pnl` 更新到缓存 `current_daily_pnl`。
+   `pnl_summary.total_pnl` 计算方式：`pnl_summary.realized_pnl + pnl_summary.unrealized_pnl`。
+   其中 `realized_pnl` 来自累计成交已实现盈亏（`trades.realized_pnl` / exec+commission 回报更新），`unrealized_pnl` 来自当前持仓未实现盈亏汇总（`pnlSingleEvent` 更新）。
+2. Total PnL (Trend)：来自 `/pnl/total-trend`，使用每日 `total_pnl` 点绘制。
 3. Account Health：来自 `/account/summary` 或 WS 的 `account_summary`。
 4. Current Positions：来自 `/positions` 或 WS 的 `positions`。
 5. 历史持仓：来自 `/positions/history` 或 WS 的 `history`。
@@ -203,7 +209,7 @@ flowchart LR
 | `commissionReportEvent` | 手续费/已实现回报 | 更新 `trades` 与缓存 realized |
 | `positionEvent` | 持仓变更 | Upsert `positions`，更新缓存与订阅 `PnLSingle` |
 | `pnlSingleEvent` | 单持仓 PnL | 更新缓存 `unrealized/daily`，加入批量落库队列 |
-| `pnlEvent` | 账户 PnL | 更新当日 PnL 缓存 |
+| `pnlEvent` | 账户 PnL | 更新账户 `dailyPnL` 缓存；`realizedPnL/unrealizedPnL` 当前仅做校验/日志，不参与业务计算 |
 | `accountSummaryEvent` | 账户汇总 | 更新缓存并即时落库 `account_summary` |
 | `errorEvent` | 连接状态 | 1100/1101/1102 更新 `ibkr_connected` |
 
@@ -245,7 +251,7 @@ flowchart LR
 
 **批量/周期落库**
 - `positions` 的 `unrealized_pnl` / `daily_pnl` 由 `pnlSingleEvent` 更新缓存后，按 `IBKR_CACHE_FLUSH_SECONDS` 批量写入。
-- `account_daily_pnl`：当检测到跨交易日时，将上一交易日的 daily pnl 落库（一次性写入）。
+- `account_total_pnl`：按 `IBKR_TOTAL_PNL_FLUSH_SECONDS`（默认 300 秒）upsert；跨交易日时也会执行落库。
 
 **不落库字段（前端计算）**
 - `Value`：`qty * avg_cost`

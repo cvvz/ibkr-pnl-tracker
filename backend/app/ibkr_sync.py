@@ -1129,6 +1129,9 @@ class IBKRSyncManager:
                         updates_without_daily: list[tuple[float, str, int, int]] = []
                         for con_id, values in pending_pnl_single.items():
                             unrealized_value, daily_value = values
+                            if daily_value is not None:
+                                if (not math.isfinite(daily_value)) or abs(daily_value) >= _DAILY_PNL_MAX:
+                                    daily_value = None
                             if daily_value is None:
                                 updates_without_daily.append(
                                     (unrealized_value, now, account_id, con_id)
@@ -1246,6 +1249,7 @@ class IBKRSyncManager:
                 last_queue_log = 0.0
                 last_cache_flush = time.time()
                 last_total_pnl_flush = time.time()
+                total_pnl_flush_interval = max(1.0, self.settings.ib_total_pnl_flush_seconds)
                 last_total_pnl_date = _trade_date_et()
                 initial_snapshot = self._cache.snapshot_account_pnl()
                 initial_total = float(initial_snapshot.get("total_pnl", 0.0))
@@ -1276,7 +1280,7 @@ class IBKRSyncManager:
                         self._cache.update_total_pnl(last_total_pnl_date, total_value)
                         flush_account_total_pnl(last_total_pnl_date, total_value)
                         last_total_pnl_flush = time.time()
-                    if time.time() - last_total_pnl_flush >= 300:
+                    if time.time() - last_total_pnl_flush >= total_pnl_flush_interval:
                         snapshot = self._cache.snapshot_account_pnl()
                         total_value = float(snapshot.get("total_pnl", 0.0))
                         self._cache.update_total_pnl(last_total_pnl_date, total_value)

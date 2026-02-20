@@ -10,9 +10,9 @@ IBKR PnL Tracker is a real-time trading PnL dashboard for Interactive Brokers. I
 
 **Key Features**
 - Real-time positions, historical positions, daily PnL, and total PnL with live WebSocket updates.
-- Cumulative Daily PnL trend chart with hover tooltips.
+- Total PnL trend chart with hover tooltips.
 - Account health metrics (net liquidation, available funds, margin requirements).
-- Gateway status and IBKR server connectivity status, with quick re-auth entry.
+- Gateway status and IBKR server connectivity status.
 - Order placement panel (market/limit) with order status feedback.
 - Trade drill-down per position, including fee totals (computed client-side).
 
@@ -49,7 +49,7 @@ Assumes frontend, backend, and IB Gateway are on the same machine. For more deta
 cd ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 ```
 
 1. IB Gateway UI settings: `configuration -> Settings -> API -> Settings`
@@ -76,13 +76,17 @@ docker run -d --name ibkr-backend \
 1. Build and run frontend:
 ```shell
 cd frontend
-docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<HOST_IP>:8000 .
-docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+docker build -t ibkr-frontend:lan .
+docker run -d --name ibkr-frontend --network ibkr-net -p 80:80 ibkr-frontend:lan
 ```
 
 **Notes**
 - If IB Gateway is in Docker, do not use `127.0.0.1` from the backend. Use the container name on the same Docker network.
-- VNC/Web login is exposed on `5900/6080`.
+- Frontend proxies API/WS to backend via `/api`, so run frontend on `ibkr-net` to reach `ibkr-backend:8000`.
+- IB Gateway exposed ports:
+  - `4001`: IB Gateway API port used by backend (`IBKR_HOST`/`IBKR_PORT`).
+  - `5901`: VNC TCP port for native VNC clients.
+  - `6080`: noVNC/websockify browser access (for web login and 2FA operations).
 - If your host uses a proxy, allow direct access for `ibkr.com` and `ibllc.com`.
 - Logging in to the same IBKR account from other clients (web/mobile) may disconnect IB Gateway. Use VNC to reconnect.
 - IBKR trade events must be on the same connection as order placement. Placing orders elsewhere may cause missing trade events here.
@@ -98,9 +102,9 @@ IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它
 
 **核心功能**
 - 实时持仓、历史持、当日盈亏与总盈亏展示（WebSocket 实时更新）。
-- Daily PnL 累加趋势图，支持悬浮查看数值。
+- Total PnL 趋势图，支持悬浮查看数值。
 - 账户健康度指标（净清算值、可用资金、保证金需求等）。
-- Gateway 与 IBKR 服务器连接状态区分显示，支持一键 Re-auth。
+- Gateway 与 IBKR 服务器连接状态区分显示。
 - 下单面板（市价/限价），并返回下单状态反馈。
 - 每个持仓支持交易明细展开，手续费合计前端计算展示。
 
@@ -137,7 +141,7 @@ IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它
 cd ib-gateway
 docker build --platform=linux/amd64 -t ib-gateway:local .
 docker network create ibkr-net
-docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5900:5900 -p 6080:6080 ib-gateway:local
+docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5901:5901 -p 6080:6080 ib-gateway:local
 ```
 
 1. IB Gateway 后台设置：`configuration -> Settings -> API -> Settings`
@@ -164,13 +168,17 @@ docker run -d --name ibkr-backend \
 1. 构建并启动前端：
 ```shell
 cd frontend
-docker build -t ibkr-frontend:lan --build-arg VITE_API_BASE=http://<HOST_IP>:8000 .
-docker run -d --name ibkr-frontend -p 80:80 ibkr-frontend:lan
+docker build -t ibkr-frontend:lan .
+docker run -d --name ibkr-frontend --network ibkr-net -p 80:80 ibkr-frontend:lan
 ```
 
 **注意事项**
 - 如果 IB Gateway 在 Docker 里，后端不要用 `127.0.0.1`，请使用同一网络下的容器名。
-- VNC/网页版登录端口为 `5900/6080`。
+- 前端通过 `/api` 反向代理到后端，请将前端容器加入 `ibkr-net`，以访问 `ibkr-backend:8000`。
+- IB Gateway 暴露端口说明：
+  - `4001`：IB Gateway API 端口，后端通过 `IBKR_HOST`/`IBKR_PORT` 连接。
+  - `5901`：VNC 原生 TCP 端口，供 VNC 客户端连接。
+  - `6080`：noVNC/websockify 网页入口，用于浏览器登录和 2FA 操作。
 - 如果机器使用代理，需要对 `ibkr.com`、`ibllc.com` 走直连。
 - 如果在其他客户端（网页/手机）登录同一 IBKR 账号，可能导致 IB Gateway 断开，需要通过 VNC 点击 reconnect。
 - 交易事件监听与下单必须在同一连接，否则在其他地方下单可能导致本系统收不到成交事件。
