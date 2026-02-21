@@ -275,6 +275,8 @@ function App() {
     ? "error"
     : "disconnected";
   const ibkrStatusClass = ibkrConnected ? "live" : "error";
+  const showReauth = !gatewayConnected || !ibkrConnected;
+  const reauthUrl = `${window.location.protocol}//${window.location.hostname}:6080/vnc.html`;
 
   const accountTotalPnl = pnlSummary?.total_pnl ?? null;
   const sortedPositions = useMemo(() => {
@@ -567,6 +569,16 @@ function App() {
                 <span className={`status ${ibkrStatusClass}`}>
                   {ibkrConnected ? "IBKR Connected" : "IBKR Disconnected"}
                 </span>
+                {showReauth && (
+                  <a
+                    className="btn tiny reauth-link"
+                    href={reauthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Re-auth
+                  </a>
+                )}
                 {ibStatus.error && (
                   <span className="status-note">{ibStatus.error}</span>
                 )}
