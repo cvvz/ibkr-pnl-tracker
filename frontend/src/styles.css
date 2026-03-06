@@ -224,6 +224,13 @@ h1 span {
   border-color: rgba(165, 107, 0, 0.3);
 }
 
+.reauth-link {
+  text-decoration: none;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .summary {
   display: grid;
   gap: 16px;

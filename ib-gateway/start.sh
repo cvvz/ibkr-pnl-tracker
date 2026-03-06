@@ -1,13 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VNC_PORT="${VNC_PORT:-5900}"
+VNC_PORT="${VNC_PORT:-5901}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_PASSWORD="${VNC_PASSWORD:-}"
-RESTART_FILE="${GATEWAY_RESTART_FILE:-/root/Jts/gateway-restart.flag}"
 export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.net.preferIPv4Stack=true"
 
+cleanup_stale_display() {
+  local display_lock="/tmp/.X0-lock"
+  local display_socket="/tmp/.X11-unix/X0"
+
+  if xdpyinfo -display :0 >/dev/null 2>&1; then
+    return
+  fi
+
+  if pgrep -f "Xvfb :0" >/dev/null 2>&1; then
+    return
+  fi
+
+  if [ -f "$display_lock" ] || [ -S "$display_socket" ]; then
+    echo "Cleaning stale X11 artifacts for display :0"
+    rm -f "$display_lock" "$display_socket"
+  fi
+}
+
 mkdir -p /tmp/.X11-unix
+cleanup_stale_display
 
 Xvfb :0 -screen 0 1280x800x24 -ac +extension GLX +render -noreset &
 FLUXBOX_PID=""
@@ -61,12 +79,6 @@ while true; do
   done
 
   while true; do
-    if [ -f "$RESTART_FILE" ]; then
-      echo "Restart flag detected, restarting IB Gateway..."
-      rm -f "$RESTART_FILE"
-      kill_gateway
-      break
-    fi
     if [ -n "$GW_PID" ] && ! kill -0 "$GW_PID" >/dev/null 2>&1; then
       break
     fi
