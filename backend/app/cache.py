@@ -130,14 +130,15 @@ class CacheStore:
             if abs(normalized_realized - stored_realized) > 1e-9:
                 corrected_rows.append((normalized_realized, _utc_now(), position_id))
         if corrected_rows:
-            conn.executemany(
-                """
-                UPDATE positions
-                SET realized_pnl = %s, updated_at = %s
-                WHERE id = %s
-                """,
-                corrected_rows,
-            )
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    UPDATE positions
+                    SET realized_pnl = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    corrected_rows,
+                )
             conn.commit()
 
         history = conn.execute(

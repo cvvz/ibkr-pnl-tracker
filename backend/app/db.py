@@ -132,4 +132,5 @@ def upsert_account(conn: psycopg.Connection, account: str, base_currency: str) -
 
 
 def execute_many(conn: psycopg.Connection, sql: str, rows: Iterable[tuple[Any, ...]]) -> None:
-    conn.executemany(sql, rows)
+    with conn.cursor() as cur:
+        cur.executemany(sql, rows)
