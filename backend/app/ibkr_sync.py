@@ -520,7 +520,7 @@ class IBKRSyncManager:
                     trade_time: str,
                     exec_id: str | None,
                     perm_id: int | None,
-                ) -> None:
+                ) -> bool:
                     logged = False
                     span = span_start(
                         "db.insert_trade",
@@ -555,7 +555,7 @@ class IBKRSyncManager:
                     except psycopg.IntegrityError:
                         span_end("db.insert_trade", span, "integrity_error")
                         logged = True
-                        return
+                        return False
                     finally:
                         if not logged:
                             span_end(
@@ -574,6 +574,7 @@ class IBKRSyncManager:
                         trade_time,
                         realized,
                     )
+                    return True
 
                 def on_exec(trade_or_fill, fill=None):
                     span = span_start("on_exec")
@@ -608,7 +609,7 @@ class IBKRSyncManager:
                     if report:
                         commission = float(report.commission or 0.0)
                         realized = float(report.realizedPNL or 0.0)
-                    insert_trade(
+                    inserted = insert_trade(
                         contract.symbol,
                         trade_exchange,
                         contract.currency,
@@ -621,7 +622,7 @@ class IBKRSyncManager:
                         exec_id,
                         perm_id,
                     )
-                    if exec_id:
+                    if exec_id and inserted:
                         position_key = (
                             contract.symbol,
                             trade_exchange,

@@ -428,6 +428,183 @@ def trades_for_position(position_id: int) -> List[Dict[str, Any]]:
         return payload
 
 
+@app.get("/debug/position/{symbol}/realized-breakdown")
+def debug_position_realized_breakdown(
+    symbol: str,
+    currency: Optional[str] = None,
+    exchange: Optional[str] = None,
+    include_trades: bool = True,
+) -> Dict[str, Any]:
+    def build_rows_payload(
+        conn: psycopg.Connection,
+        *,
+        account_id: int,
+        rows: List[Dict[str, Any]],
+        is_history: bool,
+    ) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        for item in rows:
+            query = """
+                SELECT trade_time, exchange, side, qty, price, commission, realized_pnl, ibkr_exec_id, perm_id
+                FROM trades
+                WHERE account_id = %s AND symbol = %s AND currency = %s
+            """
+            params: List[Any] = [account_id, item["symbol"], item["currency"]]
+            if item["open_time"]:
+                query += " AND trade_time >= %s"
+                params.append(item["open_time"])
+            if item["close_time"]:
+                query += " AND trade_time <= %s"
+                params.append(item["close_time"])
+            query += " ORDER BY trade_time ASC"
+            trade_rows = conn.execute(query, params).fetchall()
+            trade_realized = sum(float(row["realized_pnl"]) for row in trade_rows)
+            row_payload: Dict[str, Any] = {
+                "position_id": int(item["id"]),
+                "scope": "history" if is_history else "current",
+                "symbol": item["symbol"],
+                "exchange": item["exchange"] or "",
+                "currency": item["currency"],
+                "open_time": _format_bj(item["open_time"]) if item["open_time"] else None,
+                "close_time": _format_bj(item["close_time"]) if item["close_time"] else None,
+                "db_realized_pnl": float(item["realized_pnl"]),
+                "trades_realized_pnl": float(trade_realized),
+                "realized_diff": float(item["realized_pnl"]) - float(trade_realized),
+                "trade_count": len(trade_rows),
+            }
+            if include_trades:
+                row_payload["trades"] = [
+                    {
+                        "trade_time": _format_bj(row["trade_time"]) if row["trade_time"] else None,
+                        "exchange": row["exchange"] or "",
+                        "side": row["side"],
+                        "qty": float(row["qty"]),
+                        "price": float(row["price"]),
+                        "commission": float(row["commission"]),
+                        "realized_pnl": float(row["realized_pnl"]),
+                        "ibkr_exec_id": row["ibkr_exec_id"],
+                        "perm_id": row["perm_id"],
+                    }
+                    for row in trade_rows
+                ]
+            payload.append(row_payload)
+        return payload
+
+    symbol_key = symbol.strip().upper()
+    if not symbol_key:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    with get_connection(settings.database_url) as conn:
+        account = _get_default_account(conn)
+        if not account:
+            return {
+                "account_id": None,
+                "symbol": symbol_key,
+                "currency_filter": currency,
+                "exchange_filter": exchange,
+                "current_positions": [],
+                "history_positions": [],
+                "all_symbol_trades": {
+                    "trade_count": 0,
+                    "realized_pnl": 0.0,
+                },
+                "cache_positions": [],
+            }
+        account_id = account["id"]
+
+        current_query = """
+            SELECT id, symbol, exchange, currency, open_time, NULL AS close_time, realized_pnl
+            FROM positions
+            WHERE account_id = %s AND UPPER(symbol) = %s
+        """
+        history_query = """
+            SELECT id, symbol, exchange, currency, open_time, close_time, realized_pnl
+            FROM positions_history
+            WHERE account_id = %s AND UPPER(symbol) = %s
+        """
+        current_params: List[Any] = [account_id, symbol_key]
+        history_params: List[Any] = [account_id, symbol_key]
+        if currency:
+            current_query += " AND UPPER(currency) = UPPER(%s)"
+            history_query += " AND UPPER(currency) = UPPER(%s)"
+            current_params.append(currency)
+            history_params.append(currency)
+        if exchange:
+            current_query += " AND UPPER(COALESCE(exchange, '')) = UPPER(%s)"
+            history_query += " AND UPPER(COALESCE(exchange, '')) = UPPER(%s)"
+            current_params.append(exchange)
+            history_params.append(exchange)
+        current_query += " ORDER BY open_time DESC"
+        history_query += " ORDER BY close_time DESC"
+
+        current_rows = conn.execute(current_query, current_params).fetchall()
+        history_rows = conn.execute(history_query, history_params).fetchall()
+
+        all_trades_query = """
+            SELECT trade_time, exchange, side, qty, price, commission, realized_pnl, ibkr_exec_id, perm_id, currency
+            FROM trades
+            WHERE account_id = %s AND UPPER(symbol) = %s
+        """
+        all_trades_params: List[Any] = [account_id, symbol_key]
+        if currency:
+            all_trades_query += " AND UPPER(currency) = UPPER(%s)"
+            all_trades_params.append(currency)
+        if exchange:
+            all_trades_query += " AND UPPER(COALESCE(exchange, '')) = UPPER(%s)"
+            all_trades_params.append(exchange)
+        all_trades_query += " ORDER BY trade_time ASC"
+        all_trade_rows = conn.execute(all_trades_query, all_trades_params).fetchall()
+        all_trades_realized = sum(float(row["realized_pnl"]) for row in all_trade_rows)
+
+        cache_positions: List[Dict[str, Any]] = []
+        if _cache_ready():
+            cache_positions = [
+                entry
+                for entry in app.state.cache.snapshot_positions()
+                if str(entry.get("symbol", "")).upper() == symbol_key
+            ]
+
+        payload: Dict[str, Any] = {
+            "account_id": account_id,
+            "symbol": symbol_key,
+            "currency_filter": currency,
+            "exchange_filter": exchange,
+            "current_positions": build_rows_payload(
+                conn,
+                account_id=account_id,
+                rows=current_rows,
+                is_history=False,
+            ),
+            "history_positions": build_rows_payload(
+                conn,
+                account_id=account_id,
+                rows=history_rows,
+                is_history=True,
+            ),
+            "all_symbol_trades": {
+                "trade_count": len(all_trade_rows),
+                "realized_pnl": float(all_trades_realized),
+            },
+            "cache_positions": cache_positions,
+        }
+        if include_trades:
+            payload["all_symbol_trades"]["trades"] = [
+                {
+                    "trade_time": _format_bj(row["trade_time"]) if row["trade_time"] else None,
+                    "exchange": row["exchange"] or "",
+                    "currency": row["currency"],
+                    "side": row["side"],
+                    "qty": float(row["qty"]),
+                    "price": float(row["price"]),
+                    "commission": float(row["commission"]),
+                    "realized_pnl": float(row["realized_pnl"]),
+                    "ibkr_exec_id": row["ibkr_exec_id"],
+                    "perm_id": row["perm_id"],
+                }
+                for row in all_trade_rows
+            ]
+        return payload
+
+
 @app.websocket("/ws/updates")
 async def updates(ws: WebSocket) -> None:
     await ws.accept()

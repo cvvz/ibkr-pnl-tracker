@@ -114,6 +114,31 @@ class CacheStore:
             """,
             (account_id,),
         ).fetchall()
+        normalized_realized_by_id: dict[int, float] = {}
+        corrected_rows: list[tuple[float, str, int]] = []
+        for row in positions:
+            position_id = int(row["id"])
+            normalized_realized = _sum_realized(
+                conn,
+                account_id,
+                row["symbol"],
+                row["currency"],
+                start_time=row["open_time"],
+            )
+            normalized_realized_by_id[position_id] = normalized_realized
+            stored_realized = float(row["realized_pnl"])
+            if abs(normalized_realized - stored_realized) > 1e-9:
+                corrected_rows.append((normalized_realized, _utc_now(), position_id))
+        if corrected_rows:
+            conn.executemany(
+                """
+                UPDATE positions
+                SET realized_pnl = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                corrected_rows,
+            )
+            conn.commit()
 
         history = conn.execute(
             """
@@ -159,7 +184,7 @@ class CacheStore:
                 exchange = row["exchange"] or ""
                 currency = row["currency"]
                 open_time = row["open_time"]
-                realized = float(row["realized_pnl"])
+                realized = normalized_realized_by_id.get(int(row["id"]), float(row["realized_pnl"]))
                 unrealized = float(row["unrealized_pnl"])
                 daily = _safe_daily_pnl(row["daily_pnl"])
                 if daily is None:
@@ -358,15 +383,20 @@ class CacheStore:
         self, position_key: tuple[str, str, str], realized_delta: float
     ) -> None:
         with self._lock:
-            entry = self.positions_by_key.get(position_key)
-            if not entry:
-                return
-            entry["realized_pnl"] = entry.get("realized_pnl", 0.0) + realized_delta
-            entry["total_pnl"] = entry.get("realized_pnl", 0.0) + entry.get(
-                "unrealized_pnl", 0.0
-            )
-            self._initialized = True
-            self.last_update = _utc_now()
+            self._apply_realized_delta_locked(position_key, realized_delta)
+
+    def _apply_realized_delta_locked(
+        self, position_key: tuple[str, str, str], realized_delta: float
+    ) -> None:
+        entry = self.positions_by_key.get(position_key)
+        if not entry:
+            return
+        entry["realized_pnl"] = entry.get("realized_pnl", 0.0) + realized_delta
+        entry["total_pnl"] = entry.get("realized_pnl", 0.0) + entry.get(
+            "unrealized_pnl", 0.0
+        )
+        self._initialized = True
+        self.last_update = _utc_now()
 
     def update_current_daily_pnl(self, daily_pnl: float) -> None:
         safe_daily = _safe_daily_pnl(daily_pnl)
@@ -400,16 +430,22 @@ class CacheStore:
     ) -> None:
         with self._lock:
             previous = self.exec_realized_by_id.get(exec_id)
+            previous_key: tuple[str, str, str] | None = None
+            previous_realized = 0.0
             if previous:
-                _, last_realized = previous
-                delta = realized - last_realized
-            else:
-                delta = realized
+                previous_key, previous_realized = previous
             self.exec_realized_by_id[exec_id] = (position_key, realized)
-            if delta:
-                self.realized_total += delta
-        if delta:
-            self.apply_realized_delta(position_key, delta)
+            total_delta = realized - previous_realized
+            if total_delta:
+                self.realized_total += total_delta
+            if previous_key and previous_key != position_key and previous_realized:
+                self._apply_realized_delta_locked(previous_key, -previous_realized)
+            if previous_key and previous_key != position_key:
+                new_delta = realized
+            else:
+                new_delta = total_delta
+            if new_delta:
+                self._apply_realized_delta_locked(position_key, new_delta)
 
     def get_position_realized(self, position_key: tuple[str, str, str]) -> float | None:
         with self._lock:
