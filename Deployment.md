@@ -149,6 +149,13 @@ DB=
 ### 3) 后端
 
 ```shell
+# 设置数据库连接信息
+USER_NAME=
+PASS=
+SERVER=
+DB=
+
+
 cd ~/workspace/ibkr-pnl-tracker/backend
 docker build -t ibkr-backend:local \
  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
