@@ -28,6 +28,7 @@ def _utc_now() -> str:
 
 _NON_PRIMARY_EXCHANGES = {"IBKRATS", "OVERNIGHT"}
 _EASTERN_TZ = ZoneInfo("America/New_York")
+_TERMINAL_ORDER_STATUSES = {"CANCELLED", "APICANCELLED", "INACTIVE", "REJECTED", "FILLED"}
 _ACCOUNT_SUMMARY_TAGS = {
     "NetLiquidation": "net_liquidation",
     "TotalCashValue": "total_cash_value",
@@ -66,6 +67,10 @@ def _normalize_trading_session(session: str | None) -> str:
     if normalized in {"OVERNIGHT", "NIGHT"}:
         return "OVERNIGHT"
     return "RTH"
+
+
+def _normalize_order_status(status: str | None) -> str:
+    return (status or "").strip().upper()
 
 
 def _resolve_trade_exchange(
@@ -213,6 +218,12 @@ class OrderJob:
 
 
 @dataclass
+class CancelOrderJob:
+    request_id: str
+    order_id: int
+
+
+@dataclass
 class OrderResult:
     success: bool
     result: dict | None = None
@@ -230,6 +241,11 @@ class IBKRSyncManager:
         self._order_queue: Queue[OrderJob] = Queue(maxsize=self.settings.ib_order_queue_max)
         self._order_waiters: dict[str, tuple[threading.Event, OrderResult]] = {}
         self._order_lock = threading.Lock()
+        self._cancel_queue: Queue[CancelOrderJob] = Queue(maxsize=self.settings.ib_order_queue_max)
+        self._cancel_waiters: dict[str, tuple[threading.Event, OrderResult]] = {}
+        self._cancel_lock = threading.Lock()
+        self._open_orders: dict[int, dict[str, object]] = {}
+        self._open_orders_lock = threading.Lock()
 
     def status(self) -> SyncStatus:
         return self._status
@@ -282,6 +298,46 @@ class IBKRSyncManager:
             request_id=request_id,
         )
 
+    def enqueue_cancel_order(
+        self,
+        order_id: int,
+        request_id: str | None = None,
+        timeout: float = 8.0,
+    ) -> OrderResult:
+        if not self._status.connected:
+            return OrderResult(success=False, error="IB Gateway disconnected")
+        request_id = request_id or uuid.uuid4().hex
+        event = threading.Event()
+        result = OrderResult(success=False, error="Cancel queued", request_id=request_id)
+        with self._cancel_lock:
+            self._cancel_waiters[request_id] = (event, result)
+        try:
+            self._cancel_queue.put_nowait(CancelOrderJob(request_id=request_id, order_id=order_id))
+        except Full:
+            with self._cancel_lock:
+                self._cancel_waiters.pop(request_id, None)
+            return OrderResult(success=False, error="Cancel queue full", request_id=request_id)
+        logger.info("Cancel queued request_id=%s order_id=%s", request_id, order_id)
+        if event.wait(timeout):
+            return result
+        return OrderResult(
+            success=True,
+            result={"status": "queued", "request_id": request_id, "order_id": order_id},
+            request_id=request_id,
+        )
+
+    def snapshot_open_orders(self) -> list[dict[str, object]]:
+        with self._open_orders_lock:
+            rows = [dict(item) for item in self._open_orders.values()]
+        rows.sort(
+            key=lambda item: (
+                str(item.get("updated_at") or ""),
+                int(item.get("order_id") or 0),
+            ),
+            reverse=True,
+        )
+        return rows
+
     def _run(self) -> None:
         asyncio.set_event_loop(asyncio.new_event_loop())
         self._status = SyncStatus(running=True, started_at=_utc_now())
@@ -290,6 +346,11 @@ class IBKRSyncManager:
         while not self._stop_event.is_set():
             ib = IB()
             conn: psycopg.Connection | None = None
+            def set_order_result(request_id: str, result: OrderResult) -> None:
+                return
+
+            def set_cancel_result(request_id: str, result: OrderResult) -> None:
+                return
             try:
                 ib.connect(
                     self.settings.ib_host,
@@ -344,6 +405,84 @@ class IBKRSyncManager:
                     ref.error = result.error
                     ref.request_id = request_id
                     event.set()
+
+                def set_cancel_result(request_id: str, result: OrderResult) -> None:
+                    with self._cancel_lock:
+                        waiter = self._cancel_waiters.pop(request_id, None)
+                    if not waiter:
+                        return
+                    event, ref = waiter
+                    ref.success = result.success
+                    ref.result = result.result
+                    ref.error = result.error
+                    ref.request_id = request_id
+                    event.set()
+
+                def build_open_order_snapshot(trade: object) -> dict[str, object] | None:
+                    order = getattr(trade, "order", None)
+                    order_status = getattr(trade, "orderStatus", None)
+                    contract = getattr(trade, "contract", None)
+                    if order is None or order_status is None:
+                        return None
+                    order_id = int(getattr(order, "orderId", 0) or 0)
+                    if order_id <= 0:
+                        return None
+                    status_value = (getattr(order_status, "status", "") or "").strip()
+                    status_key = _normalize_order_status(status_value)
+                    total_qty = float(getattr(order, "totalQuantity", 0.0) or 0.0)
+                    filled_qty = float(getattr(order_status, "filled", 0.0) or 0.0)
+                    remaining_qty = float(getattr(order_status, "remaining", 0.0) or 0.0)
+                    if (
+                        total_qty > 0
+                        and remaining_qty <= 0
+                        and filled_qty >= total_qty
+                    ) or status_key in _TERMINAL_ORDER_STATUSES:
+                        return None
+                    log_rows = getattr(trade, "log", None) or []
+                    created_at = None
+                    updated_at = _utc_now()
+                    if log_rows:
+                        first_time = getattr(log_rows[0], "time", None)
+                        if isinstance(first_time, dt.datetime):
+                            if first_time.tzinfo is None:
+                                first_time = first_time.replace(tzinfo=dt.timezone.utc)
+                            created_at = first_time.isoformat()
+                        last_time = getattr(log_rows[-1], "time", None)
+                        if isinstance(last_time, dt.datetime):
+                            if last_time.tzinfo is None:
+                                last_time = last_time.replace(tzinfo=dt.timezone.utc)
+                            updated_at = last_time.isoformat()
+                    return {
+                        "order_id": order_id,
+                        "perm_id": int(getattr(order, "permId", 0) or 0),
+                        "symbol": str(getattr(contract, "symbol", "") or ""),
+                        "exchange": str(getattr(contract, "exchange", "") or ""),
+                        "currency": str(getattr(contract, "currency", "") or ""),
+                        "side": str(getattr(order, "action", "") or "").upper(),
+                        "order_type": str(getattr(order, "orderType", "") or "").upper(),
+                        "limit_price": float(getattr(order, "lmtPrice", 0.0) or 0.0)
+                        if str(getattr(order, "orderType", "") or "").upper() == "LMT"
+                        else None,
+                        "tif": str(getattr(order, "tif", "") or "").upper(),
+                        "status": status_value,
+                        "filled": filled_qty,
+                        "remaining": remaining_qty,
+                        "total_qty": total_qty,
+                        "avg_fill_price": float(getattr(order_status, "avgFillPrice", 0.0) or 0.0),
+                        "outside_rth": bool(getattr(order, "outsideRth", False)),
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                    }
+
+                def refresh_open_orders() -> None:
+                    snapshot: dict[int, dict[str, object]] = {}
+                    for trade in ib.trades():
+                        open_order = build_open_order_snapshot(trade)
+                        if open_order is None:
+                            continue
+                        snapshot[int(open_order["order_id"])] = open_order
+                    with self._open_orders_lock:
+                        self._open_orders = snapshot
 
                 def mark_update() -> None:
                     self._status.last_update = _utc_now()
@@ -1080,9 +1219,9 @@ class IBKRSyncManager:
                                 resolved_exchange,
                                 error_code,
                             )
-                            terminal_statuses = {"CANCELLED", "APICANCELLED", "INACTIVE", "REJECTED"}
+                            refresh_open_orders()
                             filled_qty = float(status.filled or 0.0)
-                            if status_value.upper() not in terminal_statuses or filled_qty > 0:
+                            if _normalize_order_status(status_value) not in _TERMINAL_ORDER_STATUSES or filled_qty > 0:
                                 set_order_result(
                                     job.request_id,
                                     OrderResult(
@@ -1124,6 +1263,90 @@ class IBKRSyncManager:
                     except Exception as exc:
                         logger.exception("Order error request_id=%s", job.request_id)
                         set_order_result(
+                            job.request_id,
+                            OrderResult(success=False, error=str(exc), request_id=job.request_id),
+                        )
+
+                def process_cancel_order(job: CancelOrderJob) -> None:
+                    try:
+                        logger.info("Cancel requested request_id=%s order_id=%s", job.request_id, job.order_id)
+                        trade = None
+                        for item in ib.trades():
+                            order = getattr(item, "order", None)
+                            order_id = int(getattr(order, "orderId", 0) or 0)
+                            if order_id == int(job.order_id):
+                                trade = item
+                                break
+                        if trade is None:
+                            refresh_open_orders()
+                            if int(job.order_id) not in {int(row["order_id"]) for row in self.snapshot_open_orders()}:
+                                set_cancel_result(
+                                    job.request_id,
+                                    OrderResult(
+                                        success=False,
+                                        error=f"Order {job.order_id} not found or already closed",
+                                        request_id=job.request_id,
+                                    ),
+                                )
+                                return
+                            set_cancel_result(
+                                job.request_id,
+                                OrderResult(
+                                    success=False,
+                                    error=f"Order {job.order_id} unavailable for cancellation",
+                                    request_id=job.request_id,
+                                ),
+                            )
+                            return
+
+                        status = trade.orderStatus
+                        status_value = (getattr(status, "status", "") or "").strip()
+                        status_key = _normalize_order_status(status_value)
+                        if status_key in _TERMINAL_ORDER_STATUSES:
+                            refresh_open_orders()
+                            set_cancel_result(
+                                job.request_id,
+                                OrderResult(
+                                    success=False,
+                                    error=f"Order {job.order_id} already {status_value or 'closed'}",
+                                    request_id=job.request_id,
+                                ),
+                            )
+                            return
+
+                        ib.cancelOrder(trade.order)
+                        ib.sleep(1)
+                        status = trade.orderStatus
+                        status_value = (getattr(status, "status", "") or "").strip()
+                        status_key = _normalize_order_status(status_value)
+                        refresh_open_orders()
+
+                        if status_key in {"PENDINGCANCEL", "CANCELLED", "APICANCELLED"}:
+                            set_cancel_result(
+                                job.request_id,
+                                OrderResult(
+                                    success=True,
+                                    result={
+                                        "order_id": int(job.order_id),
+                                        "status": status_value or "PendingCancel",
+                                        "request_id": job.request_id,
+                                    },
+                                    request_id=job.request_id,
+                                ),
+                            )
+                            return
+
+                        set_cancel_result(
+                            job.request_id,
+                            OrderResult(
+                                success=False,
+                                error=f"Cancel rejected: {status_value or 'Unknown status'}",
+                                request_id=job.request_id,
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.exception("Cancel error request_id=%s order_id=%s", job.request_id, job.order_id)
+                        set_cancel_result(
                             job.request_id,
                             OrderResult(success=False, error=str(exc), request_id=job.request_id),
                         )
@@ -1303,12 +1526,14 @@ class IBKRSyncManager:
                 logger.info("request_account_pnl done")
                 request_account_summary()
                 logger.info("request_account_summary done")
+                refresh_open_orders()
 
                 backoff = max(1, self.settings.ib_reconnect_min_delay)
                 last_keepalive = time.time()
                 last_queue_log = 0.0
                 last_cache_flush = time.time()
                 last_total_pnl_flush = time.time()
+                last_open_orders_refresh = 0.0
                 total_pnl_flush_interval = max(1.0, self.settings.ib_total_pnl_flush_seconds)
                 last_total_pnl_date = _trade_date_et()
                 initial_snapshot = self._cache.snapshot_account_pnl()
@@ -1347,9 +1572,17 @@ class IBKRSyncManager:
                         flush_account_total_pnl(last_total_pnl_date, total_value)
                         last_total_pnl_flush = time.time()
                     now = time.time()
+                    if now - last_open_orders_refresh >= 2.0:
+                        refresh_open_orders()
+                        last_open_orders_refresh = now
                     if now - last_queue_log >= 5:
                         last_queue_log = now
-                        logger.info("Order queue size=%s", self._order_queue.qsize())
+                        logger.info(
+                            "Order queue size=%s cancel queue size=%s open_orders=%s",
+                            self._order_queue.qsize(),
+                            self._cancel_queue.qsize(),
+                            len(self.snapshot_open_orders()),
+                        )
                     while True:
                         try:
                             job = self._order_queue.get_nowait()
@@ -1358,6 +1591,14 @@ class IBKRSyncManager:
                         logger.info("Order dequeued request_id=%s", job.request_id)
                         process_order(job)
                         self._order_queue.task_done()
+                    while True:
+                        try:
+                            cancel_job = self._cancel_queue.get_nowait()
+                        except Empty:
+                            break
+                        logger.info("Cancel dequeued request_id=%s", cancel_job.request_id)
+                        process_cancel_order(cancel_job)
+                        self._cancel_queue.task_done()
                     span_end("order_loop_tick", loop_span)
 
                 if not self._stop_event.is_set():
@@ -1391,6 +1632,19 @@ class IBKRSyncManager:
                             request_id=request_id,
                         ),
                     )
+                with self._cancel_lock:
+                    pending_cancel_ids = list(self._cancel_waiters.keys())
+                for request_id in pending_cancel_ids:
+                    set_cancel_result(
+                        request_id,
+                        OrderResult(
+                            success=False,
+                            error="IB Gateway disconnected",
+                            request_id=request_id,
+                        ),
+                    )
+                with self._open_orders_lock:
+                    self._open_orders = {}
 
             if self._stop_event.is_set():
                 break

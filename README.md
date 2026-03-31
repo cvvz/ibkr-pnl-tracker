@@ -14,6 +14,7 @@ IBKR PnL Tracker is a real-time trading PnL dashboard for Interactive Brokers. I
 - Account health metrics (net liquidation, available funds, margin requirements).
 - Gateway status and IBKR server connectivity status.
 - Order placement panel (market/limit) with order status feedback.
+- Open orders panel with live pending-order visibility and cancel action support.
 - Trading session options for order placement: regular hours, pre/post market, overnight.
 - Trade drill-down per position, including fee totals (computed client-side).
 
@@ -57,6 +58,10 @@ docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5901:5901 -p 
 - Set `Trusted IPs` to the backend container IP.
 - Uncheck `Read-Only API`.
 
+1. For overnight orders, also check: `configuration -> Settings -> API -> Precautions`
+- Allow direct-routed overnight orders (or disable the related precaution rule for API orders).
+- If this is blocked, IB Gateway may reject with `Error 10329` (`directly routed to OVERNIGHT`).
+
 1. Prepare Postgres and set `IBKR_DATABASE_URL`.
 
 2. Build and run backend:
@@ -91,6 +96,7 @@ docker run -d --name ibkr-frontend --network ibkr-net -p 80:80 ibkr-frontend:lan
 - If your host uses a proxy, allow direct access for `ibkr.com` and `ibllc.com`.
 - Logging in to the same IBKR account from other clients (web/mobile) may disconnect IB Gateway. Use VNC to reconnect.
 - IBKR trade events must be on the same connection as order placement. Placing orders elsewhere may cause missing trade events here.
+- `trading_session=OVERNIGHT` routes with exchange preference `OVERNIGHT -> IBKRATS -> SMART`; if API precaution is enabled, `Error 10329` can occur until Gateway Precautions are updated.
 
 **Details**
 For architecture and behavior details, see [`Details.md`](./Details.md).
@@ -107,6 +113,7 @@ IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它
 - 账户健康度指标（净清算值、可用资金、保证金需求等）。
 - Gateway 与 IBKR 服务器连接状态区分显示。
 - 下单面板（市价/限价），并返回下单状态反馈。
+- 未成交订单面板，实时显示待成交订单并支持撤单。
 - 下单支持交易时段选择：常规时段、盘前盘后、夜盘。
 - 每个持仓支持交易明细展开，手续费合计前端计算展示。
 
@@ -150,6 +157,10 @@ docker run -d --name ib-gateway --network ibkr-net -p 4001:4001 -p 5901:5901 -p 
 - `Trusted IPs` 填 backend 容器 IP。
 - 取消勾选 `Read-Only API`。
 
+1. 夜盘下单还需要检查：`configuration -> Settings -> API -> Precautions`
+- 允许 API 直连夜盘路由（或关闭对应的 precaution 限制）。
+- 否则可能出现 `Error 10329`（`directly routed to OVERNIGHT`）导致订单被拒绝/撤销。
+
 1. 准备 PostgreSQL，并设置 `IBKR_DATABASE_URL`。
 
 2. 构建并启动后端：
@@ -184,6 +195,7 @@ docker run -d --name ibkr-frontend --network ibkr-net -p 80:80 ibkr-frontend:lan
 - 如果机器使用代理，需要对 `ibkr.com`、`ibllc.com` 走直连。
 - 如果在其他客户端（网页/手机）登录同一 IBKR 账号，可能导致 IB Gateway 断开，需要通过 VNC 点击 reconnect。
 - 交易事件监听与下单必须在同一连接，否则在其他地方下单可能导致本系统收不到成交事件。
+- 当 `trading_session=OVERNIGHT` 时，系统会按 `OVERNIGHT -> IBKRATS -> SMART` 优先级尝试路由；若 Gateway 的 API Precautions 未放开，可能报 `10329`，需要先调整配置。
 
 **技术细节**
 如需更深入的架构与行为说明，请参考 [`Details.md`](./Details.md)。

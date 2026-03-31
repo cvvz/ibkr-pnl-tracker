@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 const WS_BASE =
@@ -85,9 +85,25 @@ function App() {
     price: ""
   });
   const [orderStatus, setOrderStatus] = useState(null);
+  const [openOrders, setOpenOrders] = useState([]);
+  const [cancelingOrderIds, setCancelingOrderIds] = useState(new Set());
 
   const baseCurrency = pnlSummary?.base_currency ?? "USD";
   const money = useMemo(() => currencyFormatter(baseCurrency), [baseCurrency]);
+  const refreshOpenOrders = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/orders/open`);
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      if (Array.isArray(payload)) {
+        setOpenOrders(payload);
+      }
+    } catch (error) {
+      // Keep last successful snapshot when request is transiently unavailable.
+    }
+  }, []);
 
   const toggleExpanded = (positionId) => {
     setExpanded((prev) => {
@@ -126,6 +142,14 @@ function App() {
 
     fetchSnapshot().catch(() => setWsStatus("error"));
   }, []);
+
+  useEffect(() => {
+    refreshOpenOrders().catch(() => null);
+    const interval = setInterval(() => {
+      refreshOpenOrders().catch(() => null);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [refreshOpenOrders]);
 
   useEffect(() => {
     let active = true;
@@ -199,6 +223,9 @@ function App() {
       if (payload.account_summary) {
         setAccountSummary(payload.account_summary);
       }
+      if (Array.isArray(payload.open_orders)) {
+        setOpenOrders(payload.open_orders);
+      }
     });
 
     return () => socket.close();
@@ -263,9 +290,44 @@ function App() {
         state: "success",
         message
       });
+      refreshOpenOrders().catch(() => null);
     } catch (error) {
       setOrderStatus({ state: "error", message: error.message || "Order failed" });
     }
+    window.setTimeout(() => setOrderStatus(null), 5000);
+  };
+
+  const cancelOrder = async (orderId) => {
+    setCancelingOrderIds((prev) => {
+      const next = new Set(prev);
+      next.add(orderId);
+      return next;
+    });
+    try {
+      const response = await fetch(`${API_BASE}/orders/${orderId}/cancel`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(errorPayload?.detail || `Cancel order ${orderId} failed`);
+      }
+      const result = await response.json();
+      setOrderStatus({
+        state: "success",
+        message: `Cancel ${orderId}: ${result.status || "submitted"}`
+      });
+    } catch (error) {
+      setOrderStatus({
+        state: "error",
+        message: error.message || `Cancel order ${orderId} failed`
+      });
+    }
+    setCancelingOrderIds((prev) => {
+      const next = new Set(prev);
+      next.delete(orderId);
+      return next;
+    });
+    refreshOpenOrders().catch(() => null);
     window.setTimeout(() => setOrderStatus(null), 5000);
   };
 
@@ -869,6 +931,61 @@ function App() {
               </span>
             )}
           </form>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Open Orders</h2>
+            <span className="tag">Live</span>
+          </div>
+          <div className="table">
+            <div className="row header open-order">
+              <span>Order ID</span>
+              <span>Symbol</span>
+              <span>Side</span>
+              <span>Type</span>
+              <span>Qty</span>
+              <span>Filled</span>
+              <span>Remaining</span>
+              <span>Price</span>
+              <span>Status</span>
+              <span>Updated</span>
+              <span></span>
+            </div>
+            {openOrders.length === 0 && (
+              <div className="row empty">No open orders.</div>
+            )}
+            {openOrders.map((order) => {
+              const orderId = Number(order.order_id);
+              const isCanceling = cancelingOrderIds.has(orderId);
+              return (
+                <div className="row open-order" key={`open-order-${orderId}`}>
+                  <span>{orderId}</span>
+                  <span className="symbol">
+                    {order.symbol || "--"}
+                    <small>{order.exchange || "--"}</small>
+                  </span>
+                  <span className={String(order.side || "").toUpperCase() === "BUY" ? "pos" : "neg"}>
+                    {order.side || "--"}
+                  </span>
+                  <span>{order.order_type || "--"}</span>
+                  <span>{numberFormatter.format(Number(order.total_qty || 0))}</span>
+                  <span>{numberFormatter.format(Number(order.filled || 0))}</span>
+                  <span>{numberFormatter.format(Number(order.remaining || 0))}</span>
+                  <span>{order.limit_price == null ? "--" : money.format(Number(order.limit_price || 0))}</span>
+                  <span>{order.status || "--"}</span>
+                  <span>{formatDate(order.updated_at)}</span>
+                  <button
+                    className="btn tiny ghost"
+                    onClick={() => cancelOrder(orderId)}
+                    disabled={isCanceling}
+                  >
+                    {isCanceling ? "Canceling..." : "Cancel"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </section>
 
         {activeView === "current" && (

@@ -263,6 +263,24 @@ def place_order(
     return response
 
 
+@app.get("/orders/open")
+def open_orders() -> List[Dict[str, Any]]:
+    return app.state.sync_manager.snapshot_open_orders()
+
+
+@app.post("/orders/{order_id}/cancel")
+def cancel_order(order_id: int) -> Dict[str, Any]:
+    if settings.ib_readonly:
+        raise HTTPException(status_code=400, detail="IBKR_READONLY is enabled")
+    status = app.state.sync_manager.status()
+    if not status.connected:
+        raise HTTPException(status_code=400, detail="IB Gateway disconnected")
+    result = app.state.sync_manager.enqueue_cancel_order(order_id)
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.error or "Cancel failed")
+    return result.result or {"status": "queued", "order_id": order_id, "request_id": result.request_id}
+
+
 @app.get("/positions")
 def positions() -> List[Dict[str, Any]]:
     if _cache_ready():
@@ -590,6 +608,7 @@ async def updates(ws: WebSocket) -> None:
                     "history": app.state.cache.snapshot_history(),
                     "total_pnl_trend": app.state.cache.snapshot_total_pnl_trend(),
                     "account_summary": app.state.cache.snapshot_account_summary(),
+                    "open_orders": app.state.sync_manager.snapshot_open_orders(),
                 }
             else:
                 with get_connection(settings.database_url) as conn:
@@ -621,6 +640,7 @@ async def updates(ws: WebSocket) -> None:
                                 "short_market_value": None,
                                 "as_of": _utc_now(),
                             },
+                            "open_orders": [],
                         }
                     else:
                         payload = {
@@ -633,6 +653,7 @@ async def updates(ws: WebSocket) -> None:
                             "account_summary": get_account_snapshot(
                                 conn, account["id"], account["base_currency"]
                             ),
+                            "open_orders": app.state.sync_manager.snapshot_open_orders(),
                         }
             await ws.send_json(payload)
             await asyncio.sleep(settings.ws_update_interval_seconds)

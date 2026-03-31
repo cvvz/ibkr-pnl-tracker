@@ -560,6 +560,10 @@ h1 span {
   grid-template-columns: 1.2fr 1.8fr 1fr 0.8fr;
 }
 
+.row.open-order {
+  grid-template-columns: 0.8fr 1.2fr 0.7fr 0.7fr 0.7fr 0.7fr 0.8fr 0.8fr 0.9fr 1.2fr 0.9fr;
+}
+
 .row.header {
   font-size: 12px;
   text-transform: uppercase;
@@ -610,6 +614,13 @@ h1 span {
   padding: 6px 10px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .trade-panel {

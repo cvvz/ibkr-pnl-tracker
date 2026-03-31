@@ -23,6 +23,8 @@ flowchart LR
 | GET | `/sync/status` | SyncManager | Gateway/IBKR status | Includes `ibkr_connected` |
 | GET | `/sync/health` | SyncManager | Status | Used by frontend polling |
 | POST | `/orders` | IB Gateway | Order result | Idempotency supported; `trading_session` supports `RTH`/`EXTENDED`/`OVERNIGHT` |
+| GET | `/orders/open` | IB Gateway (in-memory snapshot) | Open order list | Returns only non-terminal orders |
+| POST | `/orders/{order_id}/cancel` | IB Gateway | Cancel result | Cancels a live open order |
 | GET | `/positions` | Cache first | Current positions | DB fallback |
 | GET | `/positions/history` | Cache first | Historical positions | DB fallback |
 | GET | `/pnl/summary` | Cache first | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | Account PnL |
@@ -30,7 +32,7 @@ flowchart LR
 | GET | `/pnl/total-trend` | Cache first | Total PnL series | Trend chart |
 | GET | `/trades` | DB | Trade list | For export/debug |
 | GET | `/positions/{id}/trades` | DB | Trades for a position | Used by frontend |
-| WS | `/ws/updates` | Cache first | Real-time snapshot | `pnl_summary/positions/history/total_pnl_trend/account_summary` |
+| WS | `/ws/updates` | Cache first | Real-time snapshot | `pnl_summary/positions/history/total_pnl_trend/account_summary/open_orders` |
 
 **/ws/updates payload**
 - `pnl_summary`: account PnL summary (`daily_pnl` / `total_pnl` / `realized_pnl` / `unrealized_pnl`).
@@ -38,15 +40,23 @@ flowchart LR
 - `history`: historical positions.
 - `total_pnl_trend`: total PnL trend series.
 - `account_summary`: account health metrics.
+- `open_orders`: non-terminal orders (shown in frontend open-orders panel).
 
 ### Frontend Data Flow (Startup/Refresh)
 
 1. Initial page load calls: `/pnl/summary`, `/positions`, `/positions/history`, `/account/summary`, `/pnl/total-trend`.
-2. WebSocket `/ws/updates` updates `pnl_summary / positions / history / account_summary`.
+2. WebSocket `/ws/updates` updates `pnl_summary / positions / history / account_summary / open_orders`.
 3. `/pnl/total-trend` is refreshed every 15 seconds for the trend chart.
 4. `/sync/health` is polled every 2 seconds for Gateway/IBKR status.
 5. `/positions/{id}/trades` is fetched to show trade details and compute fee totals.
-6. Order panel submits to `/orders` and shows queued/placed status. `trading_session=EXTENDED` enables pre/post market (`outsideRth=true`), while `trading_session=OVERNIGHT` defaults exchange to `OVERNIGHT` when not specified.
+6. Order panel submits to `/orders` and shows queued/placed status. `trading_session=EXTENDED` enables pre/post market (`outsideRth=true`), while `trading_session=OVERNIGHT` tries exchange route preference `OVERNIGHT -> IBKRATS -> SMART`.
+7. Open-orders panel polls `/orders/open` every 2 seconds and submits cancellation through `/orders/{order_id}/cancel`.
+
+### Overnight Order Precaution (IB Gateway)
+
+- For API overnight routing, check `IB Gateway -> Configuration -> Settings -> API -> Precautions`.
+- If direct-routed overnight orders are blocked, IB Gateway may return `Error 10329` (`directly routed to OVERNIGHT`) and cancel/reject the order.
+- Recommended: allow overnight direct routing for API orders (or disable the related precaution rule), then retry.
 
 ### Panel Data Sources & Computation
 
@@ -60,9 +70,10 @@ flowchart LR
 3. Account Health: `/account/summary` or WS `account_summary`.
 4. Current Positions: `/positions` or WS `positions`.
 5. Historical Positions: `/positions/history` or WS `history`.
-6. Fee total: frontend sums `commission` from `/positions/{id}/trades`.
-7. `Value`: frontend calculates `qty * avg_cost`.
-8. Unrealized/Total ratios: frontend uses `|qty * avg_cost|` as denominator.
+6. Open Orders: `/orders/open` or WS `open_orders` (frontend only shows non-terminal orders).
+7. Fee total: frontend sums `commission` from `/positions/{id}/trades`.
+8. `Value`: frontend calculates `qty * avg_cost`.
+9. Unrealized/Total ratios: frontend uses `|qty * avg_cost|` as denominator.
 
 ### IB Gateway Events (Inbound)
 
@@ -89,6 +100,7 @@ flowchart LR
 | `reqCurrentTime` | Keepalive |
 | `qualifyContracts` | Contract qualification before order |
 | `placeOrder` | Place order |
+| `cancelOrder` | Cancel open order |
 
 ### Backend Startup Flow
 
@@ -97,7 +109,7 @@ flowchart LR
 3. Load cache snapshot from DB (positions/history/account_summary/daily_pnl).
 4. If `ib_auto_sync` is enabled, start sync thread.
 5. Sync thread connects to IB Gateway, registers callbacks, and requests initial data.
-6. Loop: `ib.sleep(1)`, `reqCurrentTime` keepalive, batch flush `pnlSingle`, process order queue.
+6. Loop: `ib.sleep(1)`, `reqCurrentTime` keepalive, batch flush `pnlSingle`, process order/cancel queue, and refresh open-order snapshot.
 7. On disconnect, update status and retry with backoff.
 
 ### Cache / Persistence Strategy
@@ -137,6 +149,7 @@ flowchart LR
 
 **Safety**
 - Order queue is bounded; overflow returns an error.
+- Cancel queue is bounded; overflow returns an error.
 - Idempotent order submission prevents duplicates.
 
 ## 中文
@@ -160,6 +173,8 @@ flowchart LR
 | GET | `/sync/status` | SyncManager | Gateway/IBKR 状态 | 含 `ibkr_connected` |
 | GET | `/sync/health` | SyncManager | 状态 | 前端轮询使用 |
 | POST | `/orders` | IB Gateway | 下单结果 | 支持幂等键；`trading_session` 支持 `RTH`/`EXTENDED`/`OVERNIGHT` |
+| GET | `/orders/open` | IB Gateway（内存快照） | 未成交订单列表 | 仅返回非终态订单 |
+| POST | `/orders/{order_id}/cancel` | IB Gateway | 撤单结果 | 撤销指定未成交订单 |
 | GET | `/positions` | Cache 优先 | 当前持仓列表 | 缓存未就绪时读 DB |
 | GET | `/positions/history` | Cache 优先 | 历史持仓列表 | 缓存未就绪时读 DB |
 | GET | `/pnl/summary` | Cache 优先 | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | 账户汇总 |
@@ -167,7 +182,7 @@ flowchart LR
 | GET | `/pnl/total-trend` | Cache 优先 | Total PnL 序列 | 供趋势图 |
 | GET | `/trades` | DB | 成交列表 | 后台导出用 |
 | GET | `/positions/{id}/trades` | DB | 指定持仓成交明细 | 前端展开用 |
-| WS | `/ws/updates` | Cache 优先 | 实时快照 | `pnl_summary/positions/history/total_pnl_trend/account_summary` |
+| WS | `/ws/updates` | Cache 优先 | 实时快照 | `pnl_summary/positions/history/total_pnl_trend/account_summary/open_orders` |
 
 **/ws/updates payload**
 - `pnl_summary`: 账户 PnL 汇总（`daily_pnl` / `total_pnl` / `realized_pnl` / `unrealized_pnl`）。
@@ -175,15 +190,23 @@ flowchart LR
 - `history`: 历史持仓列表（含开平仓时间、已实现）。
 - `total_pnl_trend`: Total PnL 趋势序列。
 - `account_summary`: 账户健康度指标。
+- `open_orders`: 未成交订单（用于前端 Open Orders 面板）。
 
 ### 前端启动/刷新与数据来源
 
 1. 页面加载时并发调用：`/pnl/summary`、`/positions`、`/positions/history`、`/account/summary`、`/pnl/total-trend`。
-2. 建立 WebSocket `/ws/updates`，收到消息后更新 `pnl_summary / positions / history / account_summary`。
+2. 建立 WebSocket `/ws/updates`，收到消息后更新 `pnl_summary / positions / history / account_summary / open_orders`。
 3. `pnl/total-trend` 每 15 秒轮询刷新趋势图。
 4. `/sync/health` 每 2 秒轮询，展示 Gateway 与 IBKR 的连接状态。
 5. `positions/{id}/trades` 在持仓列表更新或展开时请求，用于手续费汇总与成交明细。
-6. 订单面板通过 `/orders` 下单，返回排队/已下单状态。`trading_session=EXTENDED` 会启用盘前盘后（`outsideRth=true`），`trading_session=OVERNIGHT` 在未指定交易所时默认路由 `OVERNIGHT`。
+6. 订单面板通过 `/orders` 下单，返回排队/已下单状态。`trading_session=EXTENDED` 会启用盘前盘后（`outsideRth=true`），`trading_session=OVERNIGHT` 会按 `OVERNIGHT -> IBKRATS -> SMART` 的优先级尝试路由。
+7. Open Orders 面板每 2 秒轮询 `/orders/open`，点击撤单调用 `/orders/{order_id}/cancel`。
+
+### 夜盘下单 Precaution 配置（IB Gateway）
+
+- 夜盘 API 路由需要检查 `IB Gateway -> Configuration -> Settings -> API -> Precautions`。
+- 如果禁止 API 直连夜盘，可能返回 `Error 10329`（`directly routed to OVERNIGHT`）并导致订单拒绝/撤销。
+- 建议放开夜盘直连限制（或关闭对应 precaution 规则）后再重试。
 
 ### 各面板数据如何获取/计算
 
@@ -197,9 +220,10 @@ flowchart LR
 3. Account Health：来自 `/account/summary` 或 WS 的 `account_summary`。
 4. Current Positions：来自 `/positions` 或 WS 的 `positions`。
 5. 历史持仓：来自 `/positions/history` 或 WS 的 `history`。
-6. 手续费合计：前端对 `/positions/{id}/trades` 的 `commission` 求和。
-7. `Value`：`qty * avg_cost` 前端计算。
-8. Unrealized/Total 比例：前端计算 `value` 为分母。
+6. Open Orders：来自 `/orders/open` 或 WS 的 `open_orders`（前端仅展示非终态订单）。
+7. 手续费合计：前端对 `/positions/{id}/trades` 的 `commission` 求和。
+8. `Value`：`qty * avg_cost` 前端计算。
+9. Unrealized/Total 比例：前端计算 `value` 为分母。
 
 ### 后端监听 IB Gateway 的事件与处理
 
@@ -226,6 +250,7 @@ flowchart LR
 | `reqCurrentTime` | Keepalive |
 | `qualifyContracts` | 下单前合约校验 |
 | `placeOrder` | 下单 |
+| `cancelOrder` | 撤销未成交订单 |
 
 ### 后端启动流程
 
@@ -234,7 +259,7 @@ flowchart LR
 3. 从数据库加载缓存快照（positions/history/account_summary/daily_pnl）。
 4. 如果 `ib_auto_sync` 开启，启动同步线程。
 5. 同步线程连接 IB Gateway，注册事件回调，发起初始请求（positions/executions/pnl/account summary）。
-6. 进入循环：`ib.sleep(1)`、定时 `reqCurrentTime` 保活、批量落库 `pnlSingle`、处理订单队列。
+6. 进入循环：`ib.sleep(1)`、定时 `reqCurrentTime` 保活、批量落库 `pnlSingle`、处理下单/撤单队列，并刷新未成交订单快照。
 7. 断连时更新状态并退避重连。
 
 ### 缓存/落库策略
@@ -274,4 +299,5 @@ flowchart LR
 
 **异常与兜底**
 - 订单队列有长度限制，超限返回错误。
+- 撤单队列有长度限制，超限返回错误。
 - 幂等下单防止重复提交。
