@@ -114,7 +114,7 @@ class OrderRequest(BaseModel):
     side: Literal["buy", "sell", "BUY", "SELL"]
     order_type: Literal["MKT", "LMT", "MARKET", "LIMIT"]
     price: Optional[float] = Field(default=None, gt=0)
-    exchange: Optional[str] = "SMART"
+    exchange: Optional[str] = None
     currency: Optional[str] = "USD"
     account: Optional[str] = None
     tif: Optional[str] = None

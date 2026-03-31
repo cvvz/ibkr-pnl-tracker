@@ -1010,10 +1010,15 @@ class IBKRSyncManager:
                         outside_rth = payload.outside_rth
                         if outside_rth is None:
                             outside_rth = session in {"EXTENDED", "OVERNIGHT"}
-                        resolved_exchange = payload.exchange or "SMART"
+                        requested_exchange = (payload.exchange or "").strip().upper()
+                        resolved_exchange = requested_exchange or "SMART"
                         exchange_candidates = [resolved_exchange]
-                        if session == "OVERNIGHT" and not payload.exchange:
-                            exchange_candidates = ["OVERNIGHT", "IBKRATS", "SMART"]
+                        if session == "OVERNIGHT":
+                            if requested_exchange and requested_exchange not in {"SMART"}:
+                                exchange_candidates = [requested_exchange, "OVERNIGHT", "IBKRATS", "SMART"]
+                            else:
+                                exchange_candidates = ["OVERNIGHT", "IBKRATS", "SMART"]
+                        exchange_candidates = list(dict.fromkeys(exchange_candidates))
                         logger.info(
                             "Placing order request_id=%s symbol=%s side=%s qty=%s type=%s price=%s session=%s outside_rth=%s exchange_candidates=%s",
                             job.request_id,
@@ -1026,7 +1031,16 @@ class IBKRSyncManager:
                             outside_rth,
                             exchange_candidates,
                         )
-                        contract = None
+                        action = "BUY" if payload.side.lower() == "buy" else "SELL"
+                        qty = float(payload.qty)
+                        if payload.order_type.upper() not in {"MKT", "MARKET"} and payload.price is None:
+                            set_order_result(
+                                job.request_id,
+                                OrderResult(success=False, error="Limit price required"),
+                            )
+                            return
+                        qualified_any = False
+                        final_error = "Unable to qualify contract"
                         for exchange in exchange_candidates:
                             trial_contract = Stock(
                                 payload.symbol.strip().upper(),
@@ -1034,11 +1048,68 @@ class IBKRSyncManager:
                                 payload.currency or self.settings.base_currency,
                             )
                             qualified = ib.qualifyContracts(trial_contract)
-                            if qualified:
-                                contract = qualified[0]
-                                resolved_exchange = exchange
-                                break
-                        if contract is None:
+                            if not qualified:
+                                continue
+                            qualified_any = True
+                            contract = qualified[0]
+                            resolved_exchange = exchange
+                            if payload.order_type.upper() in {"MKT", "MARKET"}:
+                                order = MarketOrder(action, qty)
+                            else:
+                                order = LimitOrder(action, qty, float(payload.price))
+                            if payload.tif:
+                                order.tif = payload.tif
+                            if payload.account:
+                                order.account = payload.account
+                            order.outsideRth = bool(outside_rth)
+                            trade = ib.placeOrder(contract, order)
+                            ib.sleep(1)
+                            status = trade.orderStatus
+                            status_value = (status.status or "").strip()
+                            log_entry = trade.log[-1] if getattr(trade, "log", None) else None
+                            error_code = int(getattr(log_entry, "errorCode", 0) or 0)
+                            error_message = (getattr(log_entry, "message", "") or "").strip()
+                            logger.info(
+                                "Order placed request_id=%s order_id=%s status=%s filled=%s remaining=%s avg_fill=%s exchange=%s error_code=%s",
+                                job.request_id,
+                                trade.order.orderId,
+                                status_value,
+                                status.filled,
+                                status.remaining,
+                                status.avgFillPrice,
+                                resolved_exchange,
+                                error_code,
+                            )
+                            terminal_statuses = {"CANCELLED", "APICANCELLED", "INACTIVE", "REJECTED"}
+                            filled_qty = float(status.filled or 0.0)
+                            if status_value.upper() not in terminal_statuses or filled_qty > 0:
+                                set_order_result(
+                                    job.request_id,
+                                    OrderResult(
+                                        success=True,
+                                        result={
+                                            "order_id": trade.order.orderId,
+                                            "status": status_value,
+                                            "filled": status.filled,
+                                            "remaining": status.remaining,
+                                            "avg_fill_price": status.avgFillPrice,
+                                            "exchange": resolved_exchange,
+                                            "request_id": job.request_id,
+                                        },
+                                        request_id=job.request_id,
+                                    ),
+                                )
+                                return
+                            final_error = error_message or f"Order rejected: {status_value or 'Unknown'}"
+                            if session == "OVERNIGHT" and error_code == 10329:
+                                logger.warning(
+                                    "Order route blocked by API precaution request_id=%s exchange=%s; trying next route",
+                                    job.request_id,
+                                    resolved_exchange,
+                                )
+                                continue
+                            break
+                        if not qualified_any:
                             logger.warning(
                                 "Order failed to qualify request_id=%s symbol=%s exchanges=%s currency=%s",
                                 job.request_id,
@@ -1046,55 +1117,9 @@ class IBKRSyncManager:
                                 exchange_candidates,
                                 payload.currency,
                             )
-                            set_order_result(
-                                job.request_id,
-                                OrderResult(success=False, error="Unable to qualify contract"),
-                            )
-                            return
-                        action = "BUY" if payload.side.lower() == "buy" else "SELL"
-                        qty = float(payload.qty)
-                        if payload.order_type.upper() in {"MKT", "MARKET"}:
-                            order = MarketOrder(action, qty)
-                        else:
-                            if payload.price is None:
-                                set_order_result(
-                                    job.request_id,
-                                    OrderResult(success=False, error="Limit price required"),
-                                )
-                                return
-                            order = LimitOrder(action, qty, float(payload.price))
-                        if payload.tif:
-                            order.tif = payload.tif
-                        if payload.account:
-                            order.account = payload.account
-                        order.outsideRth = bool(outside_rth)
-                        trade = ib.placeOrder(contract, order)
-                        ib.sleep(1)
-                        status = trade.orderStatus
-                        logger.info(
-                            "Order placed request_id=%s order_id=%s status=%s filled=%s remaining=%s avg_fill=%s exchange=%s",
-                            job.request_id,
-                            trade.order.orderId,
-                            status.status,
-                            status.filled,
-                            status.remaining,
-                            status.avgFillPrice,
-                            resolved_exchange,
-                        )
                         set_order_result(
                             job.request_id,
-                            OrderResult(
-                                success=True,
-                                result={
-                                    "order_id": trade.order.orderId,
-                                    "status": status.status,
-                                    "filled": status.filled,
-                                    "remaining": status.remaining,
-                                    "avg_fill_price": status.avgFillPrice,
-                                    "request_id": job.request_id,
-                                },
-                                request_id=job.request_id,
-                            ),
+                            OrderResult(success=False, error=final_error, request_id=job.request_id),
                         )
                     except Exception as exc:
                         logger.exception("Order error request_id=%s", job.request_id)
