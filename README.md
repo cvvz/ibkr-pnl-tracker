@@ -14,6 +14,7 @@ IBKR PnL Tracker is a real-time trading PnL dashboard for Interactive Brokers. I
 - Account health metrics (net liquidation, available funds, margin requirements).
 - Gateway status and IBKR server connectivity status.
 - Order placement panel (market/limit) with order status feedback.
+- Trading session options for order placement: regular hours, pre/post market, overnight.
 - Trade drill-down per position, including fee totals (computed client-side).
 
 **Data Flow**
@@ -106,6 +107,7 @@ IBKR PnL Tracker 是一个面向 Interactive Brokers 的实时盈亏看板。它
 - 账户健康度指标（净清算值、可用资金、保证金需求等）。
 - Gateway 与 IBKR 服务器连接状态区分显示。
 - 下单面板（市价/限价），并返回下单状态反馈。
+- 下单支持交易时段选择：常规时段、盘前盘后、夜盘。
 - 每个持仓支持交易明细展开，手续费合计前端计算展示。
 
 **数据流**

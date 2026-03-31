@@ -22,7 +22,7 @@ flowchart LR
 | POST | `/sync/stop` | SyncManager | Status | Stop sync thread |
 | GET | `/sync/status` | SyncManager | Gateway/IBKR status | Includes `ibkr_connected` |
 | GET | `/sync/health` | SyncManager | Status | Used by frontend polling |
-| POST | `/orders` | IB Gateway | Order result | Idempotency supported |
+| POST | `/orders` | IB Gateway | Order result | Idempotency supported; `trading_session` supports `RTH`/`EXTENDED`/`OVERNIGHT` |
 | GET | `/positions` | Cache first | Current positions | DB fallback |
 | GET | `/positions/history` | Cache first | Historical positions | DB fallback |
 | GET | `/pnl/summary` | Cache first | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | Account PnL |
@@ -46,7 +46,7 @@ flowchart LR
 3. `/pnl/total-trend` is refreshed every 15 seconds for the trend chart.
 4. `/sync/health` is polled every 2 seconds for Gateway/IBKR status.
 5. `/positions/{id}/trades` is fetched to show trade details and compute fee totals.
-6. Order panel submits to `/orders` and shows queued/placed status.
+6. Order panel submits to `/orders` and shows queued/placed status. `trading_session=EXTENDED` enables pre/post market (`outsideRth=true`), while `trading_session=OVERNIGHT` defaults exchange to `OVERNIGHT` when not specified.
 
 ### Panel Data Sources & Computation
 
@@ -159,7 +159,7 @@ flowchart LR
 | POST | `/sync/stop` | SyncManager | 运行状态 | 停止后台同步线程 |
 | GET | `/sync/status` | SyncManager | Gateway/IBKR 状态 | 含 `ibkr_connected` |
 | GET | `/sync/health` | SyncManager | 状态 | 前端轮询使用 |
-| POST | `/orders` | IB Gateway | 下单结果 | 支持幂等键 |
+| POST | `/orders` | IB Gateway | 下单结果 | 支持幂等键；`trading_session` 支持 `RTH`/`EXTENDED`/`OVERNIGHT` |
 | GET | `/positions` | Cache 优先 | 当前持仓列表 | 缓存未就绪时读 DB |
 | GET | `/positions/history` | Cache 优先 | 历史持仓列表 | 缓存未就绪时读 DB |
 | GET | `/pnl/summary` | Cache 优先 | `{ account_id, base_currency, realized_pnl, unrealized_pnl, daily_pnl, total_pnl, as_of }` | 账户汇总 |
@@ -183,7 +183,7 @@ flowchart LR
 3. `pnl/total-trend` 每 15 秒轮询刷新趋势图。
 4. `/sync/health` 每 2 秒轮询，展示 Gateway 与 IBKR 的连接状态。
 5. `positions/{id}/trades` 在持仓列表更新或展开时请求，用于手续费汇总与成交明细。
-6. 订单面板通过 `/orders` 下单，返回排队/已下单状态。
+6. 订单面板通过 `/orders` 下单，返回排队/已下单状态。`trading_session=EXTENDED` 会启用盘前盘后（`outsideRth=true`），`trading_session=OVERNIGHT` 在未指定交易所时默认路由 `OVERNIGHT`。
 
 ### 各面板数据如何获取/计算
 

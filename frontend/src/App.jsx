@@ -81,6 +81,7 @@ function App() {
     qty: 1,
     side: "buy",
     order_type: "MKT",
+    trading_session: "RTH",
     price: ""
   });
   const [orderStatus, setOrderStatus] = useState(null);
@@ -235,7 +236,8 @@ function App() {
         symbol: orderForm.symbol.trim(),
         qty: Number(orderForm.qty),
         side: orderForm.side,
-        order_type: orderForm.order_type
+        order_type: orderForm.order_type,
+        trading_session: orderForm.trading_session
       };
       if (orderForm.order_type === "LMT") {
         payload.price = Number(orderForm.price);
@@ -821,6 +823,19 @@ function App() {
               >
                 <option value="MKT">Market</option>
                 <option value="LMT">Limit</option>
+              </select>
+            </label>
+            <label>
+              Session
+              <select
+                value={orderForm.trading_session}
+                onChange={(event) =>
+                  setOrderForm((prev) => ({ ...prev, trading_session: event.target.value }))
+                }
+              >
+                <option value="RTH">Regular Hours</option>
+                <option value="EXTENDED">Pre/Post Market</option>
+                <option value="OVERNIGHT">Overnight</option>
               </select>
             </label>
             <label className={orderForm.order_type === "LMT" ? "" : "disabled"}>

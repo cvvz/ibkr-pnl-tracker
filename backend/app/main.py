@@ -118,6 +118,10 @@ class OrderRequest(BaseModel):
     currency: Optional[str] = "USD"
     account: Optional[str] = None
     tif: Optional[str] = None
+    trading_session: Optional[
+        Literal["RTH", "EXTENDED", "OVERNIGHT", "rth", "extended", "overnight", "REGULAR", "regular"]
+    ] = "RTH"
+    outside_rth: Optional[bool] = None
     idempotency_key: Optional[str] = None
 
 
@@ -225,6 +229,8 @@ def place_order(
         currency=payload.currency,
         tif=payload.tif,
         account=payload.account,
+        trading_session=payload.trading_session,
+        outside_rth=payload.outside_rth,
     )
     request_id = None
     if key:

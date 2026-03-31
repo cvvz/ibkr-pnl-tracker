@@ -55,6 +55,19 @@ def _normalize_side(side: str) -> str:
     return normalized
 
 
+def _normalize_trading_session(session: str | None) -> str:
+    if not session:
+        return "RTH"
+    normalized = session.strip().upper()
+    if normalized in {"RTH", "REGULAR"}:
+        return "RTH"
+    if normalized in {"EXT", "EXTENDED", "PREPOST", "PRE_POST"}:
+        return "EXTENDED"
+    if normalized in {"OVERNIGHT", "NIGHT"}:
+        return "OVERNIGHT"
+    return "RTH"
+
+
 def _resolve_trade_exchange(
     conn: psycopg.Connection,
     account_id: int,
@@ -189,6 +202,8 @@ class OrderPayload:
     currency: str | None
     tif: str | None
     account: str | None
+    trading_session: str | None
+    outside_rth: bool | None
 
 
 @dataclass
@@ -991,27 +1006,44 @@ class IBKRSyncManager:
                 def process_order(job: OrderJob) -> None:
                     payload = job.payload
                     try:
+                        session = _normalize_trading_session(payload.trading_session)
+                        outside_rth = payload.outside_rth
+                        if outside_rth is None:
+                            outside_rth = session in {"EXTENDED", "OVERNIGHT"}
+                        resolved_exchange = payload.exchange or "SMART"
+                        exchange_candidates = [resolved_exchange]
+                        if session == "OVERNIGHT" and not payload.exchange:
+                            exchange_candidates = ["OVERNIGHT", "IBKRATS", "SMART"]
                         logger.info(
-                            "Placing order request_id=%s symbol=%s side=%s qty=%s type=%s price=%s",
+                            "Placing order request_id=%s symbol=%s side=%s qty=%s type=%s price=%s session=%s outside_rth=%s exchange_candidates=%s",
                             job.request_id,
                             payload.symbol,
                             payload.side,
                             payload.qty,
                             payload.order_type,
                             payload.price,
+                            session,
+                            outside_rth,
+                            exchange_candidates,
                         )
-                        contract = Stock(
-                            payload.symbol.strip().upper(),
-                            payload.exchange or "SMART",
-                            payload.currency or self.settings.base_currency,
-                        )
-                        qualified = ib.qualifyContracts(contract)
-                        if not qualified:
+                        contract = None
+                        for exchange in exchange_candidates:
+                            trial_contract = Stock(
+                                payload.symbol.strip().upper(),
+                                exchange,
+                                payload.currency or self.settings.base_currency,
+                            )
+                            qualified = ib.qualifyContracts(trial_contract)
+                            if qualified:
+                                contract = qualified[0]
+                                resolved_exchange = exchange
+                                break
+                        if contract is None:
                             logger.warning(
-                                "Order failed to qualify request_id=%s symbol=%s exchange=%s currency=%s",
+                                "Order failed to qualify request_id=%s symbol=%s exchanges=%s currency=%s",
                                 job.request_id,
                                 payload.symbol,
-                                payload.exchange,
+                                exchange_candidates,
                                 payload.currency,
                             )
                             set_order_result(
@@ -1035,17 +1067,19 @@ class IBKRSyncManager:
                             order.tif = payload.tif
                         if payload.account:
                             order.account = payload.account
+                        order.outsideRth = bool(outside_rth)
                         trade = ib.placeOrder(contract, order)
                         ib.sleep(1)
                         status = trade.orderStatus
                         logger.info(
-                            "Order placed request_id=%s order_id=%s status=%s filled=%s remaining=%s avg_fill=%s",
+                            "Order placed request_id=%s order_id=%s status=%s filled=%s remaining=%s avg_fill=%s exchange=%s",
                             job.request_id,
                             trade.order.orderId,
                             status.status,
                             status.filled,
                             status.remaining,
                             status.avgFillPrice,
+                            resolved_exchange,
                         )
                         set_order_result(
                             job.request_id,
