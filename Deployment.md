@@ -29,6 +29,13 @@ Compose env names:
 - `IBKR_BASE_CURRENCY`, `IBKR_PORT`, `IBKR_READONLY`, `IBKR_AUTO_SYNC`: backend runtime options.
 - `VNC_PASSWORD`, `PIP_INDEX_URL`: optional.
 
+Postgres data persistence:
+- Data is stored in Docker named volume `ibkr-pg-data` (runtime name is typically `<project>_ibkr-pg-data`).
+- Removing only the postgres container (or `docker compose down`) does not delete data.
+- `docker compose down -v` or deleting the volume will delete data.
+- Optional backup example:
+  `docker exec -t ibkr-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`
+
 ### 1) Deploy IB Gateway
 
 ```shell
@@ -163,6 +170,13 @@ Compose 环境变量说明：
 - `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_HOST`、`POSTGRES_DB`：数据库连接配置
 - `IBKR_BASE_CURRENCY`、`IBKR_PORT`、`IBKR_READONLY`、`IBKR_AUTO_SYNC`：后端运行参数
 - `VNC_PASSWORD`、`PIP_INDEX_URL`：可选
+
+Postgres 数据持久化：
+- 数据保存在 Docker 命名卷 `ibkr-pg-data`（实际运行时通常是 `<project>_ibkr-pg-data`）。
+- 仅删除 postgres 容器（或执行 `docker compose down`）不会删除数据。
+- 执行 `docker compose down -v` 或删除该卷会导致数据被删除。
+- 可选备份命令示例：
+  `docker exec -t ibkr-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`
 
 ### 1) 部署 IB Gateway
 

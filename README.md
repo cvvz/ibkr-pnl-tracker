@@ -67,6 +67,12 @@ docker compose up -d --build
 - IB Gateway noVNC: `http://localhost:6080`
 - Postgres: `localhost:5432`
 - Stop all services: `docker compose down`
+- Postgres data persistence:
+  - Data is stored in Docker named volume `ibkr-pg-data` (runtime name is typically `<project>_ibkr-pg-data`).
+  - Removing only the container (or `docker compose down`) does not delete data.
+  - `docker compose down -v` or deleting the volume will delete data.
+  - Optional backup example:
+    `docker exec -t ibkr-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`
 
 1. Build and run IB Gateway:
 ```shell
@@ -189,6 +195,12 @@ docker compose up -d --build
 - IB Gateway noVNC：`http://localhost:6080`
 - Postgres：`localhost:5432`
 - 停止全部服务：`docker compose down`
+- Postgres 数据持久化：
+  - 数据保存在 Docker 命名卷 `ibkr-pg-data`（实际运行时通常是 `<project>_ibkr-pg-data`）。
+  - 仅删除容器（或执行 `docker compose down`）不会删除数据。
+  - 执行 `docker compose down -v` 或删除该卷会导致数据被删除。
+  - 可选备份命令示例：
+    `docker exec -t ibkr-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql`
 
 1. 构建并启动 IB Gateway：
 ```shell
