@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ibkr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ibkr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ibkr}
+      POSTGRES_DB: ${POSTGRES_DB:-ibkr}
+    volumes:
+      - ibkr-pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ibkr} -d ${POSTGRES_DB:-ibkr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ib-gateway:
+    build:
+      context: ./ib-gateway
+    platform: linux/amd64
+    container_name: ib-gateway
+    restart: unless-stopped
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+    ports:
+      - "4001:4001"
+      - "5901:5901"
+      - "6080:6080"
+
+  ibkr-backend:
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    container_name: ibkr-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ib-gateway:
+        condition: service_started
+    environment:
+      IBKR_DATABASE_URL: postgresql://${POSTGRES_USER:-ibkr}:${POSTGRES_PASSWORD:-ibkr}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-ibkr}
+      IBKR_HOST: ib-gateway
+      IBKR_PORT: ${IBKR_PORT:-4001}
+      IBKR_BASE_CURRENCY: ${IBKR_BASE_CURRENCY:-USD}
+      IBKR_READONLY: ${IBKR_READONLY:-false}
+      IBKR_AUTO_SYNC: ${IBKR_AUTO_SYNC:-true}
+    ports:
+      - "8000:8000"
+
+  ibkr-frontend:
+    build:
+      context: ./frontend
+    container_name: ibkr-frontend
+    restart: unless-stopped
+    depends_on:
+      ibkr-backend:
+        condition: service_started
+    ports:
+      - "80:80"
+
+volumes:
+  ibkr-pg-data:

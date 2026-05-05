@@ -223,7 +223,7 @@ flowchart LR
 6. Open Orders：来自 `/orders/open` 或 WS 的 `open_orders`（前端仅展示非终态订单）。
 7. 手续费合计：前端对 `/positions/{id}/trades` 的 `commission` 求和。
 8. `Value`：`qty * avg_cost` 前端计算。
-9. Unrealized/Total 比例：前端计算 `value` 为分母。
+9. Unrealized/Total 比例：前端以 `|qty * avg_cost|` 为分母计算。
 
 ### 后端监听 IB Gateway 的事件与处理
 

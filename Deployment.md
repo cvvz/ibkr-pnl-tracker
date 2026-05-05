@@ -8,6 +8,27 @@
 
 Assumption: frontend, backend, and IB Gateway run on the same machine.
 
+### 0) Docker Compose (Recommended, includes local Postgres)
+
+```shell
+cd ~/workspace/ibkr-pnl-tracker
+cp .env.compose.example .env
+docker compose up -d --build
+```
+
+After startup, configure IB Gateway via noVNC (`http://localhost:6080`):
+
+1. Go to `configuration -> Settings -> API -> Settings`.
+2. Set `Trusted IPs` to backend container IP:
+   `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ibkr-backend`
+3. Uncheck `Read-Only API`.
+4. For overnight orders, also update `configuration -> Settings -> API -> Precautions` to allow direct-routed overnight orders (otherwise `Error 10329` may occur).
+
+Compose env names:
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_DB`: database connection config.
+- `IBKR_BASE_CURRENCY`, `IBKR_PORT`, `IBKR_READONLY`, `IBKR_AUTO_SYNC`: backend runtime options.
+- `VNC_PASSWORD`, `PIP_INDEX_URL`: optional.
+
 ### 1) Deploy IB Gateway
 
 ```shell
@@ -23,6 +44,7 @@ Port usage:
 - `4001`: IB Gateway API port used by backend (`IBKR_HOST`/`IBKR_PORT`).
 - `5901`: VNC TCP port for native VNC clients.
 - `6080`: noVNC/websockify browser access (for web login and 2FA operations).
+- On macOS, system Screen Sharing/Remote Management commonly uses `5900`; keeping container VNC on `5901` helps avoid local port conflicts.
 
 ### 1.1) IB Gateway UI Settings
 
@@ -41,10 +63,10 @@ For overnight order routing, also check `configuration -> Settings -> API -> Pre
 Set database connection info:
 
 ```shell
-USER_NAME=
-PASS=
-SERVER=
-DB=
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_HOST=
+POSTGRES_DB=
 ```
 
 ### 3) Backend
@@ -60,7 +82,7 @@ docker run -d --name ibkr-backend \
   --network ibkr-net \
   --ip 172.18.0.11 \
   -p 8000:8000 \
-  -e IBKR_DATABASE_URL=postgresql://$USER_NAME:$PASS@$SERVER/$DB \
+  -e IBKR_DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/$POSTGRES_DB \
   -e IBKR_HOST=ib-gateway \
   -e IBKR_PORT=4001 \
   -e IBKR_READONLY=false \
@@ -83,14 +105,18 @@ docker run -d --name ibkr-backend \
   --network ibkr-net \
     --ip 172.18.0.11 \
   -p 8000:8000 \
-  -e IBKR_DATABASE_URL=<IBKR_DATABASE_URL> \
+  -e IBKR_DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/$POSTGRES_DB \
   -e IBKR_HOST=ib-gateway \
   -e IBKR_PORT=4001 \
   -e IBKR_READONLY=false \
   ibkr-backend:local
 ```
 
-Then set `Trusted IPs` in IB Gateway to `172.18.0.11` (CIDR not supported).
+Then set `Trusted IPs` in IB Gateway to the current backend container IP (CIDR not supported), for example:
+
+```shell
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ibkr-backend
+```
 
 ### 4) Frontend
 
@@ -111,15 +137,32 @@ If the IB Gateway host uses a proxy, allow direct access for these domains:
 - DOMAIN-SUFFIX,ibkr.com, 🎯 Direct
 ```
 
-Order routing note:
-- `trading_session=OVERNIGHT` uses exchange preference `OVERNIGHT -> IBKRATS -> SMART`.
-- If Precautions are not updated, `Error 10329` may still occur for overnight orders.
-
 ## 中文
 
 ## 本地/局域网部署（单机）
 
 默认假设：前端、后端、IB Gateway 部署在同一台机器
+
+### 0) Docker Compose（一键，内置本地 Postgres）
+
+```shell
+cd ~/workspace/ibkr-pnl-tracker
+cp .env.compose.example .env
+docker compose up -d --build
+```
+
+启动后通过 noVNC（`http://localhost:6080`）配置 IB Gateway：
+
+1. 进入 `configuration -> Settings -> API -> Settings`
+2. `Trusted IPs` 填后端容器当前 IP：
+   `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ibkr-backend`
+3. 取消勾选 `Read-Only API`
+4. 夜盘下单需在 `configuration -> Settings -> API -> Precautions` 放开 API 直连夜盘限制（否则可能报 `10329`）
+
+Compose 环境变量说明：
+- `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_HOST`、`POSTGRES_DB`：数据库连接配置
+- `IBKR_BASE_CURRENCY`、`IBKR_PORT`、`IBKR_READONLY`、`IBKR_AUTO_SYNC`：后端运行参数
+- `VNC_PASSWORD`、`PIP_INDEX_URL`：可选
 
 ### 1) 部署 IB Gateway
 
@@ -136,6 +179,7 @@ docker run -d --name ib-gateway \
 - `4001`：IB Gateway API 端口，后端通过 `IBKR_HOST`/`IBKR_PORT` 连接。
 - `5901`：VNC 原生 TCP 端口，供 VNC 客户端连接。
 - `6080`：noVNC/websockify 网页入口，用于浏览器登录和 2FA 操作。  
+- 在 macOS 上，系统屏幕共享/远程管理通常占用 `5900`；这里默认使用 `5901` 可以避免本地端口冲突。
 
 ### 1.1) IB Gateway 后台设置
 
@@ -154,20 +198,20 @@ docker run -d --name ib-gateway \
 设置数据库连接信息
 
 ```shell
-USER_NAME=
-PASS=
-SERVER=
-DB=
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_HOST=
+POSTGRES_DB=
 ```
 
 ### 3) 后端
 
 ```shell
 # 设置数据库连接信息
-USER_NAME=
-PASS=
-SERVER=
-DB=
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_HOST=
+POSTGRES_DB=
 
 
 cd ~/workspace/ibkr-pnl-tracker/backend
@@ -180,7 +224,7 @@ docker run -d --name ibkr-backend \
   --network ibkr-net \
   --ip 172.18.0.11 \
   -p 8000:8000 \
-  -e IBKR_DATABASE_URL=postgresql://$USER_NAME:$PASS@$SERVER/$DB \
+  -e IBKR_DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/$POSTGRES_DB \
   -e IBKR_HOST=ib-gateway \
   -e IBKR_PORT=4001 \
   -e IBKR_READONLY=false \
@@ -203,14 +247,18 @@ docker run -d --name ibkr-backend \
   --network ibkr-net \
     --ip 172.18.0.11 \
   -p 8000:8000 \
-  -e IBKR_DATABASE_URL=<IBKR_DATABASE_URL> \
+  -e IBKR_DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/$POSTGRES_DB \
   -e IBKR_HOST=ib-gateway \
   -e IBKR_PORT=4001 \
   -e IBKR_READONLY=false \
   ibkr-backend:local
 ```
 
-然后在ib gateway后台设置Trusted IPs 为 172.18.0.11 (不支持CIDR)
+然后在 ib gateway 后台将 Trusted IPs 设置为后端容器当前 IP（不支持 CIDR），例如：
+
+```shell
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ibkr-backend
+```
 
 ### 4) 前端
 
@@ -230,7 +278,3 @@ ib gateway所在的机器如果使用了代理，需要加上这两个规则，�
 - DOMAIN-SUFFIX,ibllc.com, 🎯 全球直连
 - DOMAIN-SUFFIX,ibkr.com, 🎯 全球直连
 ```
-
-下单路由说明：
-- `trading_session=OVERNIGHT` 会按 `OVERNIGHT -> IBKRATS -> SMART` 优先级尝试路由。
-- 如果 Precautions 没有放开，夜盘单仍可能触发 `10329`。
